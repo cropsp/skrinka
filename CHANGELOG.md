@@ -19,6 +19,8 @@ All notable changes to Skrinka are listed here. The format follows
   top. It opens on the monitor under the mouse and checks the values before saving; saved
   settings apply at once. The global hotkeys are paused while it is open.
 - An empty hotkey in `config.toml` disables that hotkey.
+- Published on GitHub with CI; tagged versions become GitHub Releases with `skrinka.exe`, a zip
+  (README, license, changelog, third-party licenses) and `SHA256SUMS.txt`.
 
 ### Changed
 
