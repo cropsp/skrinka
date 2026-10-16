@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod capture;
 mod config;
+mod dialog;
 mod tray;
 
 use std::fs::{self, File, OpenOptions};
@@ -31,7 +33,8 @@ fn main() {
     if let Err(e) = run() {
         let text = format!("{e:#}");
         error!("fatal: {text}");
-        fatal_dialog(&text);
+        // The event loop is gone (or never started), so a blocking dialog is fine here.
+        dialog::error(&text);
         std::process::exit(1);
     }
 }
@@ -102,13 +105,4 @@ fn init_logging(path: &Path) -> anyhow::Result<()> {
     simplelog::WriteLogger::init(LevelFilter::Info, log_config.build(), file)
         .context("cannot initialise logging")?;
     Ok(())
-}
-
-fn fatal_dialog(text: &str) {
-    let _ = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title("Skrinka")
-        .set_description(text)
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
 }

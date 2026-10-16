@@ -1,18 +1,20 @@
-use tray_icon::menu::{Menu, MenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
     /// Dropping the `TrayIcon` removes the icon, so it lives as long as `App`.
     _icon: TrayIcon,
+    pub debug_dump: MenuItem,
     pub quit: MenuItem,
 }
 
 impl Tray {
     pub fn new() -> anyhow::Result<Tray> {
+        let debug_dump = MenuItem::new("Debug: dump capture", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
-        menu.append(&quit)?;
+        menu.append_items(&[&debug_dump, &PredefinedMenuItem::separator(), &quit])?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -20,7 +22,7 @@ impl Tray {
             .with_icon(Icon::from_rgba(icon_rgba(), ICON_SIZE as u32, ICON_SIZE as u32)?)
             .build()?;
 
-        Ok(Tray { _icon: icon, quit })
+        Ok(Tray { _icon: icon, debug_dump, quit })
     }
 }
 

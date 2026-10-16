@@ -1,5 +1,8 @@
+use std::fs;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
+use anyhow::Context;
 use log::{error, info};
 use tray_icon::menu::{MenuEvent, MenuId};
 use winit::application::ApplicationHandler;
@@ -7,7 +10,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
+use crate::capture;
 use crate::config::Config;
+use crate::dialog;
 use crate::tray::Tray;
 
 /// `EventLoopProxy` is `Send` but not `Sync` on Windows, while the tauri-apps event handlers
@@ -60,15 +65,68 @@ impl App {
             send_event(&proxy, UserEvent::TrayMenu(e.id));
         }));
 
+        log_monitors(event_loop);
         info!("ready; screenshots go to {}", self.config.save_dir.display());
     }
 
     fn on_menu(&mut self, event_loop: &ActiveEventLoop, id: MenuId) {
         let Some(tray) = &self.tray else { return };
-        if id == *tray.quit.id() {
+        if id == *tray.debug_dump.id() {
+            self.debug_dump_capture();
+        } else if id == *tray.quit.id() {
             info!("quit from the tray menu");
             event_loop.exit();
         }
+    }
+
+    /// Saves the whole virtual screen to `save_dir/debug_capture.png`.
+    fn debug_dump_capture(&self) {
+        let capture = match capture::capture_virtual_screen() {
+            Ok(capture) => capture,
+            Err(e) => {
+                error!("capture failed: {e:#}");
+                dialog::error_async(format!("Capture failed: {e:#}"));
+                return;
+            }
+        };
+        info!(
+            "captured the virtual screen: origin ({}, {}), {}x{}",
+            capture.x0, capture.y0, capture.width, capture.height
+        );
+        let dir = self.config.save_dir.clone();
+        thread::spawn(move || {
+            let path = dir.join("debug_capture.png");
+            let result = fs::create_dir_all(&dir)
+                .with_context(|| format!("cannot create {}", dir.display()))
+                .and_then(|()| {
+                    capture
+                        .to_rgba_image()
+                        .save(&path)
+                        .with_context(|| format!("cannot save {}", path.display()))
+                });
+            match result {
+                Ok(()) => info!("debug capture saved to {}", path.display()),
+                Err(e) => {
+                    error!("{e:#}");
+                    dialog::error(&format!("{e:#}"));
+                }
+            }
+        });
+    }
+}
+
+fn log_monitors(event_loop: &ActiveEventLoop) {
+    for (i, monitor) in event_loop.available_monitors().enumerate() {
+        let (pos, size) = (monitor.position(), monitor.size());
+        info!(
+            "monitor {i} {:?}: position ({}, {}), size {}x{} physical px, scale {}",
+            monitor.name().unwrap_or_default(),
+            pos.x,
+            pos.y,
+            size.width,
+            size.height,
+            monitor.scale_factor()
+        );
     }
 }
 
