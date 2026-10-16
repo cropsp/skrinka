@@ -7,6 +7,7 @@ mod dialog;
 mod hotkeys;
 mod output;
 mod overlay;
+mod text;
 mod tray;
 mod util;
 
@@ -57,7 +58,7 @@ fn run() -> anyhow::Result<()> {
         .build()
         .context("cannot create the event loop")?;
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
-    let mut app = App::new(config, proxy);
+    let mut app = App::new(config, config_path, proxy);
     event_loop.run_app(&mut app).context("event loop failed")?;
 
     if let Some(text) = app.take_fatal_error() {

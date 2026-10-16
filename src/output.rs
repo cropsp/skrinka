@@ -24,6 +24,9 @@ use crate::dialog;
 pub enum Action {
     /// Clipboard, then a PNG in `save_dir`.
     ClipboardAndAutoSave,
+    ClipboardOnly,
+    /// "Save as" dialog; clipboard and PNG only if the user picks a file.
+    SaveAs,
 }
 
 #[derive(Debug)]
@@ -36,12 +39,26 @@ pub struct WorkerResult {
 pub fn spawn(image: RgbaImage, action: Action, config: Config, proxy: SharedProxy) {
     thread::spawn(move || {
         let mut errors = Vec::new();
+        // Clipboard first: the user can paste while the PNG is still being encoded.
         let saved_path = match action {
             Action::ClipboardAndAutoSave => {
-                // Clipboard first: the user can paste while the PNG is still being encoded.
                 keep_error(&mut errors, set_clipboard(&image));
                 keep_error(&mut errors, auto_save(&image, &config))
             }
+            Action::ClipboardOnly => {
+                keep_error(&mut errors, set_clipboard(&image));
+                None
+            }
+            Action::SaveAs => match ask_save_path(&config) {
+                Some(path) => {
+                    keep_error(&mut errors, set_clipboard(&image));
+                    keep_error(&mut errors, save_as(&image, path))
+                }
+                None => {
+                    info!("save as cancelled");
+                    None
+                }
+            },
         };
         let error = (!errors.is_empty()).then(|| errors.join("\n\n"));
         if let Some(text) = &error {
@@ -83,6 +100,43 @@ fn auto_save(image: &RgbaImage, config: &Config) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("cannot create {}", dir.join(&name).display()))?;
     save_png(image, file, &path)?;
     Ok(path)
+}
+
+/// The native "Save as" dialog, opened in the last "Save as" folder (else `save_dir`) with the
+/// generated name. `None` if the user cancels.
+fn ask_save_path(config: &Config) -> Option<PathBuf> {
+    let dir = if config.last_save_as_dir.is_dir() {
+        &config.last_save_as_dir
+    } else {
+        // The dialog falls back to some other folder if this one does not exist yet.
+        let _ = fs::create_dir_all(&config.save_dir);
+        &config.save_dir
+    };
+    rfd::FileDialog::new()
+        .set_title("Save screenshot")
+        .set_directory(dir)
+        .set_file_name(format_filename(&config.filename_format, &Local::now()))
+        .add_filter("PNG image", &["png"])
+        .save_file()
+}
+
+/// Saves where the user chose; the dialog has already asked about overwriting.
+fn save_as(image: &RgbaImage, path: PathBuf) -> anyhow::Result<PathBuf> {
+    let path = with_png_extension(path);
+    let file = File::create(&path).with_context(|| format!("cannot create {}", path.display()))?;
+    save_png(image, file, &path)?;
+    Ok(path)
+}
+
+fn with_png_extension(path: PathBuf) -> PathBuf {
+    let is_png = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if is_png {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".png");
+        PathBuf::from(name)
+    }
 }
 
 /// Encodes into an already created file; removes the file again if that fails.
@@ -200,6 +254,14 @@ mod tests {
         assert_eq!(format_filename("shot.png", &at()), "shot.png");
         assert_eq!(format_filename("shot.PNG", &at()), "shot.PNG");
         assert_eq!(format_filename("shot.jpg", &at()), "shot.jpg.png");
+    }
+
+    #[test]
+    fn save_as_path_gets_png_extension() {
+        assert_eq!(with_png_extension(PathBuf::from(r"D:\a\shot")), PathBuf::from(r"D:\a\shot.png"));
+        assert_eq!(with_png_extension(PathBuf::from(r"D:\a\shot.PNG")), PathBuf::from(r"D:\a\shot.PNG"));
+        assert_eq!(with_png_extension(PathBuf::from(r"D:\a\shot.jpg")), PathBuf::from(r"D:\a\shot.jpg.png"));
+        assert_eq!(with_png_extension(PathBuf::from(r"D:\a\v1.2")), PathBuf::from(r"D:\a\v1.2.png"));
     }
 
     #[test]

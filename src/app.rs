@@ -1,9 +1,11 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use anyhow::Context;
-use log::{error, info};
+use log::{error, info, warn};
 use tray_icon::menu::{MenuEvent, MenuId};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -17,6 +19,7 @@ use crate::dialog;
 use crate::hotkeys::Hotkeys;
 use crate::output::{self, Action, WorkerResult};
 use crate::overlay::{OverlaySession, Outcome};
+use crate::text::Text;
 use crate::tray::Tray;
 use crate::util::{self, Rect};
 
@@ -41,22 +44,27 @@ pub fn send_event(proxy: &SharedProxy, event: UserEvent) {
 pub struct App {
     proxy: SharedProxy,
     config: Config,
+    config_path: PathBuf,
     initialized: bool,
     tray: Option<Tray>,
     hotkeys: Option<Hotkeys>,
     overlay: Option<OverlaySession>,
+    /// A "Save as" dialog is open; a new overlay (always on top) would hide it.
+    save_as_open: bool,
     fatal_error: Option<String>,
 }
 
 impl App {
-    pub fn new(config: Config, proxy: SharedProxy) -> App {
+    pub fn new(config: Config, config_path: PathBuf, proxy: SharedProxy) -> App {
         App {
             proxy,
             config,
+            config_path,
             initialized: false,
             tray: None,
             hotkeys: None,
             overlay: None,
+            save_as_open: false,
             fatal_error: None,
         }
     }
@@ -114,10 +122,20 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        if self.save_as_open {
+            info!("region capture ignored: the Save as dialog is still open");
+            return;
+        }
+        let started = Instant::now();
+        // The font is parsed while the screen is captured and the windows are built.
+        let text = thread::spawn(Text::load);
         // Captured before any overlay window exists, so none of them is in the shot.
         let Some(capture) = capture_or_report() else { return };
-        match OverlaySession::open(event_loop, capture) {
-            Ok(overlay) => self.overlay = Some(overlay),
+        match OverlaySession::open(event_loop, capture, text) {
+            Ok(overlay) => {
+                info!("region overlay ready in {} ms", started.elapsed().as_millis());
+                self.overlay = Some(overlay);
+            }
             Err(e) => {
                 error!("cannot open the region overlay: {e:#}");
                 dialog::error_async(format!("Could not open the region overlay: {e:#}"));
@@ -136,6 +154,7 @@ impl App {
             Outcome::Finish(image, action) => {
                 // The overlay goes first, so a dialog can never open underneath it.
                 self.overlay = None;
+                self.save_as_open = action == Action::SaveAs;
                 output::spawn(image, action, self.config.clone(), self.proxy.clone());
             }
         }
@@ -164,6 +183,37 @@ impl App {
             (Some(_), _) => info!("{:?} finished with errors", result.action),
             (None, Some(path)) => info!("{:?} finished: {}", result.action, path.display()),
             (None, None) => info!("{:?} finished", result.action),
+        }
+        if result.action == Action::SaveAs {
+            self.save_as_open = false;
+            if let Some(dir) = result.saved_path.as_deref().and_then(Path::parent) {
+                self.remember_save_as_dir(dir);
+            }
+        }
+    }
+
+    /// Stores the folder of the last "Save as" in the config file, only when it changed.
+    fn remember_save_as_dir(&mut self, dir: &Path) {
+        if dir == self.config.last_save_as_dir {
+            return;
+        }
+        self.config.last_save_as_dir = dir.to_path_buf();
+        // Start from the file, not from memory: edits the user has not reloaded yet must
+        // survive. If the file is broken right now, it is left alone.
+        let on_disk = if self.config_path.exists() {
+            Config::load(&self.config_path)
+        } else {
+            Ok(self.config.clone())
+        };
+        match on_disk {
+            Ok(mut on_disk) => {
+                on_disk.last_save_as_dir = dir.to_path_buf();
+                match on_disk.save(&self.config_path) {
+                    Ok(()) => info!("last_save_as_dir = {}", dir.display()),
+                    Err(e) => error!("cannot save last_save_as_dir: {e:#}"),
+                }
+            }
+            Err(e) => warn!("last_save_as_dir not saved, the config file does not parse: {e:#}"),
         }
     }
 

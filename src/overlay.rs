@@ -3,6 +3,7 @@
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::thread::JoinHandle;
 
 use anyhow::Context as _;
 use image::RgbaImage;
@@ -17,10 +18,16 @@ use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
 use crate::capture::{self, Capture};
 use crate::output::Action;
+use crate::text::Text;
 use crate::util::{self, Rect};
 
 const BORDER_COLOR: u32 = 0x00E3_4133; // ScreenCloud red (227, 65, 51)
 const BORDER_WIDTH: i32 = 2;
+const HELP: &str =
+    "Drag to select  ·  Enter: copy + save  ·  Ctrl+S: save as  ·  Ctrl+C: copy  ·  Esc: cancel";
+const HELP_TOP: i32 = 40;
+/// Gap between the size label and the selection below it.
+const LABEL_GAP: i32 = 4;
 
 pub enum Outcome {
     Continue,
@@ -57,14 +64,23 @@ struct Selection {
 
 pub struct OverlaySession {
     capture: Capture,
+    text: Text,
     windows: Vec<OverlayWindow>,
     drag: Option<Drag>,
     selection: Option<Selection>,
+    ctrl: bool,
+    /// Set by the first mouse press; hides the help line.
+    started: bool,
 }
 
 impl OverlaySession {
-    /// `capture` must be taken before this is called, so the overlay is not in it.
-    pub fn open(event_loop: &ActiveEventLoop, capture: Capture) -> anyhow::Result<OverlaySession> {
+    /// `capture` must be taken before this is called, so the overlay is not in it. `text` is
+    /// the font being loaded meanwhile on another thread.
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        capture: Capture,
+        text: JoinHandle<Text>,
+    ) -> anyhow::Result<OverlaySession> {
         let monitors: Vec<Rect> = event_loop
             .available_monitors()
             .map(|m| {
@@ -83,6 +99,10 @@ impl OverlaySession {
                 .with_context(|| format!("cannot create the overlay for monitor {monitor:?}"))?;
             windows.push(win);
         }
+        let text = text.join().unwrap_or_else(|_| {
+            error!("loading the overlay font panicked");
+            Text::none()
+        });
 
         // Shown only now, with the monitor under the cursor last: it is the one created
         // "active", so it gets the keyboard focus. winit's `focus_window()` is not used because
@@ -102,7 +122,15 @@ impl OverlaySession {
         }
         info!("region overlay open on {} monitor(s)", windows.len());
 
-        Ok(OverlaySession { capture, windows, drag: None, selection: None })
+        Ok(OverlaySession {
+            capture,
+            text,
+            windows,
+            drag: None,
+            selection: None,
+            ctrl: false,
+            started: false,
+        })
     }
 
     pub fn window_event(&mut self, id: WindowId, event: WindowEvent) -> Outcome {
@@ -122,7 +150,8 @@ impl OverlaySession {
                 let at = self.windows[idx].last_cursor;
                 self.selection = None;
                 self.drag = Some(Drag { win: idx, start: at, cur: at });
-                // Also clears a selection drawn on another monitor.
+                self.started = true;
+                // Also clears a selection on another monitor and the help line everywhere.
                 self.redraw_all();
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
@@ -135,13 +164,16 @@ impl OverlaySession {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
                 return Outcome::Cancel;
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.ctrl = modifiers.state().control_key(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
-                // Physical keys: the logical key depends on the keyboard layout.
+                // Physical keys: with the Ukrainian layout the logical key for C is "с".
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::Escape) => return Outcome::Cancel,
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
                         return self.finish(Action::ClipboardAndAutoSave);
                     }
+                    PhysicalKey::Code(KeyCode::KeyC) if self.ctrl => return self.finish(Action::ClipboardOnly),
+                    PhysicalKey::Code(KeyCode::KeyS) if self.ctrl => return self.finish(Action::SaveAs),
                     _ => {}
                 }
             }
@@ -203,6 +235,7 @@ impl OverlaySession {
 
     fn render(&mut self, idx: usize) {
         let live = self.live_rect(idx);
+        let text = &self.text;
         let win = &mut self.windows[idx];
         let (w, h) = (win.monitor.w, win.monitor.h);
         let mut buffer = match win.surface.buffer_mut() {
@@ -220,6 +253,15 @@ impl OverlaySession {
                 buffer[start..end].copy_from_slice(&win.base[start..end]);
             }
             draw_border(&mut buffer, w, h, rect);
+            let label = format!("{} × {}", rect.w, rect.h);
+            if let Some(size) = text.label_size(&label) {
+                text.draw_label(&mut buffer, w, h, label_position(rect, size, w), &label);
+            }
+        }
+        if !self.started {
+            if let Some((bw, _)) = text.label_size(HELP) {
+                text.draw_label(&mut buffer, w, h, ((w - bw) / 2, HELP_TOP), HELP);
+            }
         }
         if let Err(e) = buffer.present() {
             error!("overlay present: {e}");
@@ -311,6 +353,16 @@ fn dim(p: u32) -> u32 {
     rb | g
 }
 
+/// Above the selection; inside its top-left corner when there is no room above; never past
+/// the right edge of a `window_w` wide window.
+fn label_position(rect: Rect, (bw, bh): (i32, i32), window_w: i32) -> (i32, i32) {
+    let (mut x, mut y) = (rect.x, rect.y - bh - LABEL_GAP);
+    if y < 0 {
+        (x, y) = (rect.x + LABEL_GAP, rect.y + LABEL_GAP);
+    }
+    (x.min(window_w - bw).max(0), y)
+}
+
 /// A border just outside `rect`, clipped to the `w`×`h` buffer.
 fn draw_border(buffer: &mut [u32], w: i32, h: i32, rect: Rect) {
     let b = BORDER_WIDTH;
@@ -346,6 +398,17 @@ mod tests {
                 .fold(0, |acc, c| acc | c);
             assert_eq!(dim(p), expected, "pixel {p:06x}");
         }
+    }
+
+    #[test]
+    fn label_goes_above_inside_or_left() {
+        let size = (80, 24);
+        // Room above: 4 px above the selection.
+        assert_eq!(label_position(Rect::new(100, 200, 50, 50), size, 1920), (100, 172));
+        // At the top edge: inside the selection.
+        assert_eq!(label_position(Rect::new(100, 10, 50, 50), size, 1920), (104, 14));
+        // Near the right edge: shifted left to stay on screen.
+        assert_eq!(label_position(Rect::new(1900, 200, 20, 50), size, 1920), (1840, 172));
     }
 
     #[test]
