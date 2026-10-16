@@ -162,7 +162,7 @@ impl App {
             TrayAction::ReloadConfig
         } else if id == *tray.autostart.id() {
             TrayAction::ToggleAutostart
-        } else if id == *tray.debug_dump.id() {
+        } else if tray.debug_dump.as_ref().is_some_and(|item| id == *item.id()) {
             TrayAction::DebugDump
         } else if id == *tray.quit.id() {
             TrayAction::Quit

@@ -13,7 +13,8 @@ pub struct Tray {
     pub open_config: MenuItem,
     pub reload_config: MenuItem,
     pub autostart: CheckMenuItem,
-    pub debug_dump: MenuItem,
+    /// Debug builds only: saves the raw virtual-screen capture.
+    pub debug_dump: Option<MenuItem>,
     pub quit: MenuItem,
 }
 
@@ -25,7 +26,8 @@ impl Tray {
         let open_config = MenuItem::new("Open config file", true, None);
         let reload_config = MenuItem::new("Reload config", true, None);
         let autostart = CheckMenuItem::new("Run on startup", true, autostart_enabled, None);
-        let debug_dump = MenuItem::new("Debug: dump capture", true, None);
+        let debug_dump =
+            cfg!(debug_assertions).then(|| MenuItem::new("Debug: dump capture", true, None));
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
@@ -39,9 +41,11 @@ impl Tray {
             &PredefinedMenuItem::separator(),
             &autostart,
             &PredefinedMenuItem::separator(),
-            &debug_dump,
-            &quit,
         ])?;
+        if let Some(item) = &debug_dump {
+            menu.append(item)?;
+        }
+        menu.append(&quit)?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
