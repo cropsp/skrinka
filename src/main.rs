@@ -6,11 +6,13 @@ mod capture;
 mod config;
 mod dialog;
 mod hotkeys;
+mod icon;
 mod output;
 mod overlay;
 mod text;
 mod tray;
 mod util;
+mod version;
 mod window;
 
 use std::fs::{self, File, OpenOptions};
@@ -52,7 +54,7 @@ fn run() -> anyhow::Result<()> {
     init_logging(&dir.join("skrinka.log"))?;
 
     let config_path = config::config_path()?;
-    info!("Skrinka {} starting", env!("CARGO_PKG_VERSION"));
+    info!("{} starting", version::full());
     info!("config file: {}", config_path.display());
     let config = Config::load_or_create(&config_path)?;
 

@@ -10,6 +10,9 @@ All notable changes to Skrinka are listed here. The format follows
 
 - MIT `LICENSE` (it covers every version, including 0.1.0 and 0.2.0), `THIRD-PARTY-LICENSES.html`
   and this changelog.
+- Build number, commit and build date in the binary: the log starts with
+  `Skrinka 0.3.0 (Build N · abc1234 · YYYY-MM-DD) starting`; the tray tooltip shows the version.
+- `skrinka.exe` has an icon and version information (Explorer → Properties → Details).
 
 ### Changed
 
