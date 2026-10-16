@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Skrinka is a Windows-only (10/11, x86_64, MSVC) tray screenshot tool in Rust that replaces ScreenCloud. `TASK.md` is the v1 spec (scope, pinned crate versions, behaviour, DPI rules, pitfalls, acceptance tests) and `TASK-v2.md` the v2 spec, which adds selection handles, active-window capture and notifications after a save. Read both before changing behaviour. Still out of scope: an editor (arrows, text, blur), uploads, JPG, a settings GUI, CLI args, a selection spanning two monitors, click-to-open on notifications; **never add auto-update or anything that downloads**. `README.md` holds the user docs and the manual test checklist.
+Skrinka is a Windows-only (10/11, x86_64, MSVC) tray screenshot tool in Rust that replaces ScreenCloud. The specs live in `docs/design/`: `TASK-v1.md` (scope, pinned crate versions, behaviour, DPI rules, pitfalls, acceptance tests), `TASK-v2.md` (selection handles, active-window capture, notifications after a save) and `TASK-v3.md` (Part A, 0.3.0: GitHub, CI and releases, build info, the Settings window; Part B, 0.4.0: the annotation editor). Read them before changing behaviour. Still out of scope: uploads, JPG, a Ukrainian UI (planned; keep user-visible strings in one place), settings tabs, CLI args, a selection spanning two monitors, click-to-open on notifications; **never add auto-update or anything that downloads**. `README.md` holds the user docs and the manual test checklist; `CHANGELOG.md` the release notes.
 
 ## Commands
 

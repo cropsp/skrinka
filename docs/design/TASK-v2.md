@@ -30,8 +30,8 @@ git tag -a v0.1.0 -m "Skrinka 0.1.0: region/full-screen capture, tray, hotkeys"
 
 Then work on `main` in the same step-by-step, commit-per-step style as v1. Build with
 `cargo build --release`, keep `cargo clippy --release --all-targets -- -D warnings` clean and
-`cargo test` green after every step. Stop the running `skrinka.exe` before rebuilding (the user
-runs a copy from `D:\tools\Skrinka\`, which does not lock `target\release\skrinka.exe`, but a copy
+`cargo test` green after every step. Stop the running `skrinka.exe` before rebuilding (a copy
+running from the folder you installed it in does not lock `target\release\skrinka.exe`, but a copy
 started from `target\release` would).
 
 ## 2. Feature A — selection handles (`src/overlay.rs`, `src/util.rs`)
@@ -299,8 +299,8 @@ in the notification centre.
   rule for maximized windows, the tray uID = 1 assumption and where it is verified.
 - Final: `cargo clippy --release --all-targets -- -D warnings`, `cargo test`, `cargo build --release`,
   commit, `git tag -a v0.2.0 -m "Skrinka 0.2.0: selection handles, window capture, notifications"`.
-- Tell the user to copy `target\release\skrinka.exe` over `D:\tools\Skrinka\skrinka.exe` (quit the
-  running copy first).
+- Tell the user to copy `target\release\skrinka.exe` over the copy in the folder they installed it
+  in (quit the running copy first).
 
 ## 6. Acceptance
 

@@ -1,0 +1,19 @@
+# cargo-about configuration for THIRD-PARTY-LICENSES.html:
+#   cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "ISC",
+    "MPL-2.0",
+    # clipboard-win and error-code (via arboard); permissive.
+    "BSL-1.0",
+]
+targets = ["x86_64-pc-windows-msvc"]
+# Only what ends up in skrinka.exe, and not Skrinka itself (publish = false).
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }

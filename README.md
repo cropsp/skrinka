@@ -166,3 +166,12 @@ The log is `%APPDATA%\Skrinka\skrinka.log`; it is cleared at startup once it gro
 - [ ] "Capture window" from the tray menu → the window you were working in.
 - [ ] After `Enter`, `Shift+Alt+1` and `Shift+Alt+3` a "Screenshot saved" notification shows the file name; `notifications = 'off'` + Reload → none; `'all'` → also one after `Ctrl+C`.
 - [ ] Ukrainian layout: arrows, `Ctrl+C`, `Ctrl+S`, `Enter`, `Esc` still work in the overlay.
+
+## License
+
+MIT, see [LICENSE](LICENSE). It covers every version of Skrinka, including v0.1.0 and v0.2.0.
+The licenses of the crates compiled into `skrinka.exe` are in
+[THIRD-PARTY-LICENSES.html](THIRD-PARTY-LICENSES.html).
+
+Skrinka was inspired by ScreenCloud and uses the same default hotkeys, but contains no code,
+text or images from it.

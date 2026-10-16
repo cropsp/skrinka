@@ -1,1 +1,6 @@
 /target
+*.rs.bk
+*.pdb
+rustc-ice-*.txt
+/dist
+.claude/settings.local.json

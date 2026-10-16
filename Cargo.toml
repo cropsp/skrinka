@@ -1,7 +1,14 @@
 [package]
 name = "skrinka"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
+description = "Lightweight Windows screenshot tool: hotkey, region select, clipboard or file"
+repository = "https://github.com/cropsp/skrinka"
+license = "MIT"
+readme = "README.md"
+keywords = ["screenshot", "screen-capture", "windows", "clipboard", "tray"]
+categories = ["multimedia::images", "os::windows-apis", "gui"]
+publish = false
 
 [dependencies]
 winit        = "0.30"
