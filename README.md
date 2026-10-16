@@ -86,7 +86,19 @@ The log is `%APPDATA%\Skrinka\skrinka.log`; it is cleared at startup once it gro
   `focus_window()` is avoided because it injects an Alt press that, with Shift still held, can
   switch the keyboard layout.
 - The overlay font (Segoe UI, else Arial) is parsed per overlay on a helper thread and dropped
-  afterwards; keeping it loaded would cost about 20 MB of idle memory.
+  afterwards; keeping it loaded would cost about 20 MB of idle memory. The parse leaves about
+  5 MB of freed heap committed, so the app returns it to Windows (`HeapOptimizeResources`) when
+  an overlay is cancelled and when a worker finishes.
+- The overlay windows have drag and drop turned off: otherwise winit calls `OleInitialize` for
+  every window and never undoes it, which keeps OLE's DLLs and threads loaded.
+- Idle memory that grows after use and is owned by Windows, not by Skrinka:
+  - The Save-as dialog loads about 90 shell DLLs (network, OneDrive and other namespace
+    extensions) that stay loaded: about +19 MB working set, +13 MB private.
+  - The clipboard keeps the last copied image in the copying process until the next copy, so
+    8 MB after a full-screen capture of a 1920×1080 monitor.
+  - Reading the screen maps a copy of the whole virtual screen (4 bytes per pixel) into the
+    process. It is shared memory that Windows releases on its own schedule; it counts in the
+    working set but not in private bytes.
 - `global-hotkey` and `muda` accept their event handler only once per process, so "Reload config"
   re-registers the hotkeys and updates shared ids instead of replacing the handler.
 
@@ -103,4 +115,4 @@ The log is `%APPDATA%\Skrinka\skrinka.log`; it is cleared at startup once it gro
 - [ ] With the Ukrainian keyboard layout active: `Ctrl+C`, `Ctrl+S`, `Enter`, `Esc` still work in the overlay.
 - [ ] Set `filename_format` to something invalid (`%Q%`) → Reload config → capture still works with the default name, warning in the log.
 - [ ] "Run on startup" toggles the registry value (`regedit`: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, or Task Manager → Startup).
-- [ ] Idle memory stays small (< 20 MB; about 8 MB measured); exe size a few MB.
+- [ ] Idle memory stays small (< 20 MB): about 8 MB working set at start, about 12 MB (3 MB private) after region captures. A full-screen capture or the Save-as dialog adds memory owned by Windows (see "How it works"). The exe is a few MB.

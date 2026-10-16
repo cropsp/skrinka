@@ -269,6 +269,7 @@ impl App {
             Outcome::Cancel => {
                 info!("region capture cancelled");
                 self.overlay = None;
+                release_freed_memory();
             }
             Outcome::Finish(image, action) => {
                 // The overlay goes first, so a dialog can never open underneath it.
@@ -298,6 +299,8 @@ impl App {
     }
 
     fn on_worker_done(&mut self, result: WorkerResult) {
+        // Also covers the overlay of a finished region capture, dropped when the worker started.
+        release_freed_memory();
         match (&result.error, &result.saved_path) {
             (Some(_), _) => info!("{:?} finished with errors", result.action),
             (None, Some(path)) => info!("{:?} finished: {}", result.action, path.display()),
@@ -378,6 +381,33 @@ fn capture_or_report() -> Option<Capture> {
             dialog::error_async(format!("Capture failed: {e:#}"));
         })
         .ok()
+}
+
+/// Hands heap memory that has been freed back to Windows. Parsing the overlay font makes ~20 MB
+/// of small allocations; once the font is dropped, the heap would otherwise keep about 5 MB of
+/// that committed for the rest of the run.
+fn release_freed_memory() {
+    use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
+    use windows::Win32::System::SystemServices::{
+        HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, HEAP_OPTIMIZE_RESOURCES_INFORMATION,
+    };
+
+    let info = HEAP_OPTIMIZE_RESOURCES_INFORMATION {
+        Version: HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION,
+        Flags: 0,
+    };
+    // Without a heap handle this applies to every heap of the process.
+    let result = unsafe {
+        HeapSetInformation(
+            None,
+            HeapOptimizeResources,
+            Some(&info as *const HEAP_OPTIMIZE_RESOURCES_INFORMATION as *const core::ffi::c_void),
+            std::mem::size_of_val(&info),
+        )
+    };
+    if let Err(e) = result {
+        warn!("cannot release freed heap memory: {e}");
+    }
 }
 
 /// Monitor rectangle in physical virtual-screen pixels.

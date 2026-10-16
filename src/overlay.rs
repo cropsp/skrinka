@@ -298,7 +298,10 @@ impl OverlayWindow {
             .with_cursor(CursorIcon::Crosshair)
             .with_skip_taskbar(true)
             .with_undecorated_shadow(false)
-            .with_corner_preference(CornerPreference::DoNotRound);
+            .with_corner_preference(CornerPreference::DoNotRound)
+            // No file drops. With drag and drop on, winit calls OleInitialize for every window
+            // and never undoes it, which keeps OLE's DLLs and threads loaded for the whole run.
+            .with_drag_and_drop(false);
         let window = Rc::new(event_loop.create_window(attributes)?);
 
         // winit creates the window on the primary monitor and then moves it; arriving on a

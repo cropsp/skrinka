@@ -60,6 +60,8 @@ pub fn spawn(image: RgbaImage, action: Action, config: Config, proxy: SharedProx
                 }
             },
         };
+        // Freed before reporting back, so the main thread can hand the memory back to Windows.
+        drop(image);
         let error = (!errors.is_empty()).then(|| errors.join("\n\n"));
         if let Some(text) = &error {
             error!("{action:?} failed: {text}");
