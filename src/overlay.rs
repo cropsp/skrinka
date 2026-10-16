@@ -23,13 +23,15 @@ use crate::util::{self, Rect};
 
 const BORDER_COLOR: u32 = 0x00E3_4133; // ScreenCloud red (227, 65, 51)
 const BORDER_WIDTH: i32 = 2;
-const HELP: &str =
-    "Drag to select  ·  Enter: copy + save  ·  Ctrl+S: save as  ·  Ctrl+C: copy  ·  Esc: cancel";
+const HELP: &str = "Drag to select  ·  Drag inside to move, edges to resize  ·  Arrows: nudge  ·  \
+                    Enter: copy + save  ·  Ctrl+S: save as  ·  Ctrl+C: copy  ·  Esc: cancel";
 const HELP_TOP: i32 = 40;
 /// Gap between the size label and the selection below it.
 const LABEL_GAP: i32 = 4;
 /// How far from an edge of the selection a press still grabs that edge.
 const HANDLE_HIT: i32 = 8;
+/// Side of the squares drawn on the corners and edge midpoints of the selection.
+const HANDLE_SIZE: i32 = 8;
 
 pub enum Outcome {
     Continue,
@@ -49,6 +51,8 @@ struct OverlayWindow {
     dimmed: Vec<u32>,
     /// Window-local, clamped; `MouseInput` carries no position.
     last_cursor: (i32, i32),
+    /// What `set_cursor` was last called with.
+    current_cursor: CursorIcon,
 }
 
 /// Where a window-local point lies relative to the selection.
@@ -109,6 +113,7 @@ pub struct OverlaySession {
     drag: Option<Drag>,
     selection: Option<Selection>,
     ctrl: bool,
+    shift: bool,
     /// Set by the first mouse press; hides the help line.
     started: bool,
 }
@@ -169,6 +174,7 @@ impl OverlaySession {
             drag: None,
             selection: None,
             ctrl: false,
+            shift: false,
             started: false,
         })
     }
@@ -184,6 +190,8 @@ impl OverlaySession {
                 if let Some(drag) = self.drag.as_mut().filter(|d| d.win == idx) {
                     drag.cur = win.last_cursor;
                     win.window.request_redraw();
+                } else {
+                    self.update_cursor(idx);
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -206,16 +214,27 @@ impl OverlaySession {
                     // A plain click outside the selection leaves nothing selected.
                     let click = drag.kind == DragKind::Draw && drag.start == drag.cur;
                     self.selection = (!click).then_some(Selection { win: idx, rect });
+                    self.update_cursor(idx);
                     self.windows[idx].window.request_redraw();
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
                 return Outcome::Cancel;
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.ctrl = modifiers.state().control_key(),
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.ctrl = modifiers.state().control_key();
+                self.shift = modifiers.state().shift_key();
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let step = if self.shift { 10 } else { 1 };
                 // Physical keys: with the Ukrainian layout the logical key for C is "с".
                 match event.physical_key {
+                    PhysicalKey::Code(KeyCode::ArrowLeft) => self.nudge_selection(-step, 0),
+                    PhysicalKey::Code(KeyCode::ArrowRight) => self.nudge_selection(step, 0),
+                    PhysicalKey::Code(KeyCode::ArrowUp) => self.nudge_selection(0, -step),
+                    PhysicalKey::Code(KeyCode::ArrowDown) => self.nudge_selection(0, step),
+                    // Only the arrows act on key repeats.
+                    _ if event.repeat => {}
                     PhysicalKey::Code(KeyCode::Escape) => return Outcome::Cancel,
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
                         return self.finish(Action::ClipboardAndAutoSave);
@@ -275,6 +294,34 @@ impl OverlaySession {
         }
     }
 
+    /// Moves the selection by `(dx, dy)` inside its window, also when another window has the
+    /// keyboard focus. Ignored while the mouse button is held.
+    fn nudge_selection(&mut self, dx: i32, dy: i32) {
+        if self.drag.is_some() {
+            return;
+        }
+        let Some(sel) = self.selection.as_mut() else { return };
+        sel.rect = nudge(sel.rect, dx, dy, self.windows[sel.win].size());
+        let idx = sel.win;
+        self.update_cursor(idx);
+        self.windows[idx].window.request_redraw();
+    }
+
+    /// Shows on window `idx` what a press at the cursor would do. Left alone during a drag: the
+    /// cursor stays as it was at press time.
+    fn update_cursor(&mut self, idx: usize) {
+        if self.drag.is_some() {
+            return;
+        }
+        let selection = self.selection_on(idx);
+        let win = &mut self.windows[idx];
+        let icon = cursor_for(selection.map_or(Hit::Outside, |r| hit_test(r, win.last_cursor)));
+        if icon != win.current_cursor {
+            win.window.set_cursor(icon);
+            win.current_cursor = icon;
+        }
+    }
+
     /// The selection, if it is on window `idx`.
     fn selection_on(&self, idx: usize) -> Option<Rect> {
         self.selection.filter(|s| s.win == idx).map(|s| s.rect)
@@ -291,6 +338,8 @@ impl OverlaySession {
 
     fn render(&mut self, idx: usize) {
         let live = self.live_rect(idx);
+        // Not while a new selection is being drawn.
+        let handles = !matches!(self.drag, Some(Drag { kind: DragKind::Draw, .. }));
         let text = &self.text;
         let win = &mut self.windows[idx];
         let (w, h) = (win.monitor.w, win.monitor.h);
@@ -309,6 +358,9 @@ impl OverlaySession {
                 buffer[start..end].copy_from_slice(&win.base[start..end]);
             }
             draw_border(&mut buffer, w, h, rect);
+            if handles {
+                draw_handles(&mut buffer, w, h, rect);
+            }
             let label = format!("{} × {}", rect.w, rect.h);
             if let Some(size) = text.label_size(&label) {
                 text.draw_label(&mut buffer, w, h, label_position(rect, size, w), &label);
@@ -382,7 +434,16 @@ impl OverlayWindow {
             util::clamp_to_window((x - monitor.x) as f64, (y - monitor.y) as f64, monitor.w, monitor.h)
         });
 
-        Ok(OverlayWindow { window, _context: context, surface, monitor, base, dimmed, last_cursor })
+        Ok(OverlayWindow {
+            window,
+            _context: context,
+            surface,
+            monitor,
+            base,
+            dimmed,
+            last_cursor,
+            current_cursor: CursorIcon::Crosshair,
+        })
     }
 
     /// Width and height in pixels; the window covers its monitor exactly.
@@ -453,6 +514,22 @@ fn press_kind(selection: Option<Rect>, p: (i32, i32)) -> DragKind {
     }
 }
 
+/// `r` moved by `(dx, dy)`, kept inside a window of `(w, h)`.
+fn nudge(r: Rect, dx: i32, dy: i32, (w, h): (i32, i32)) -> Rect {
+    r.placed_within(r.x + dx, r.y + dy, w, h)
+}
+
+fn cursor_for(hit: Hit) -> CursorIcon {
+    match hit {
+        Hit::Outside => CursorIcon::Crosshair,
+        Hit::Inside => CursorIcon::Move,
+        Hit::Edge(Side::Left | Side::Right) => CursorIcon::EwResize,
+        Hit::Edge(Side::Top | Side::Bottom) => CursorIcon::NsResize,
+        Hit::Corner(Corner::TopLeft | Corner::BottomRight) => CursorIcon::NwseResize,
+        Hit::Corner(Corner::TopRight | Corner::BottomLeft) => CursorIcon::NeswResize,
+    }
+}
+
 /// The capture's pixels for one monitor (black where the monitor lies outside the capture).
 fn monitor_pixels(capture: &Capture, monitor: Rect) -> Vec<u32> {
     let (w, h) = (monitor.w as usize, monitor.h as usize);
@@ -500,6 +577,22 @@ fn draw_border(buffer: &mut [u32], w: i32, h: i32, rect: Rect) {
     ];
     for side in sides {
         fill_rect(buffer, w, h, side, BORDER_COLOR);
+    }
+}
+
+/// Squares centred on the four corners and the four edge midpoints of `rect`, clipped to the
+/// `w`×`h` buffer.
+fn draw_handles(buffer: &mut [u32], w: i32, h: i32, rect: Rect) {
+    let xs = [rect.x, (rect.x + rect.right()) / 2, rect.right()];
+    let ys = [rect.y, (rect.y + rect.bottom()) / 2, rect.bottom()];
+    let half = HANDLE_SIZE / 2;
+    for (j, &y) in ys.iter().enumerate() {
+        for (i, &x) in xs.iter().enumerate() {
+            // The centre of the selection is not a handle.
+            if (i, j) != (1, 1) {
+                fill_rect(buffer, w, h, Rect::new(x - half, y - half, HANDLE_SIZE, HANDLE_SIZE), BORDER_COLOR);
+            }
+        }
     }
 }
 
@@ -640,6 +733,46 @@ mod tests {
         // One axis at a time.
         assert_eq!(drag_to(SEL, grab, (1919, 170)), Rect::new(1720, 120, 200, 100));
         assert_eq!(drag_to(SEL, grab, (250, 0)), Rect::new(150, 0, 200, 100));
+    }
+
+    #[test]
+    fn nudge_is_clamped_to_the_window() {
+        let r = Rect::new(10, 20, 30, 40);
+        assert_eq!(nudge(r, 1, 0, WINDOW), Rect::new(11, 20, 30, 40));
+        assert_eq!(nudge(r, 0, -10, WINDOW), Rect::new(10, 10, 30, 40));
+        assert_eq!(nudge(r, -20, -30, WINDOW), Rect::new(0, 0, 30, 40));
+        let corner = Rect::new(1885, 1035, 30, 40);
+        assert_eq!(nudge(corner, 10, 10, WINDOW), Rect::new(1890, 1040, 30, 40));
+    }
+
+    #[test]
+    fn handles_sit_on_corners_and_midpoints() {
+        let (w, h) = (40, 40);
+        let mut buffer = vec![0u32; (w * h) as usize];
+        // Corners at 4 and 23, midpoints at 13: handles cover 0..=7, 9..=16 and 19..=26.
+        draw_handles(&mut buffer, w, h, Rect::new(4, 4, 20, 20));
+        let at = |x: i32, y: i32| buffer[(y * w + x) as usize];
+        assert_eq!(at(0, 0), BORDER_COLOR);
+        assert_eq!(at(7, 7), BORDER_COLOR);
+        assert_eq!(at(8, 4), 0);
+        assert_eq!(at(9, 0), BORDER_COLOR);
+        assert_eq!(at(16, 7), BORDER_COLOR);
+        assert_eq!(at(17, 4), 0);
+        assert_eq!(at(0, 9), BORDER_COLOR);
+        assert_eq!(at(0, 8), 0);
+        assert_eq!(at(26, 26), BORDER_COLOR);
+        assert_eq!(at(27, 27), 0);
+        // No handle in the middle.
+        assert_eq!(at(13, 13), 0);
+    }
+
+    #[test]
+    fn handles_are_clipped_to_the_window() {
+        let (w, h) = (10, 10);
+        let mut buffer = vec![0u32; (w * h) as usize];
+        draw_handles(&mut buffer, w, h, Rect::new(0, 0, 10, 10));
+        assert_eq!(buffer[0], BORDER_COLOR);
+        assert_eq!(buffer[(h * w - 1) as usize], BORDER_COLOR);
     }
 
     #[test]
