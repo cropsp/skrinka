@@ -26,8 +26,24 @@ impl Rect {
         self.x <= px && px < self.x + self.w && self.y <= py && py < self.y + self.h
     }
 
+    /// The last column inside the rectangle.
+    pub fn right(&self) -> i32 {
+        self.x + self.w - 1
+    }
+
+    /// The last row inside the rectangle.
+    pub fn bottom(&self) -> i32 {
+        self.y + self.h - 1
+    }
+
     pub fn offset(&self, dx: i32, dy: i32) -> Rect {
         Rect { x: self.x + dx, y: self.y + dy, ..*self }
+    }
+
+    /// The same size with its top-left corner at `(x, y)`, pushed back inside a `w`×`h` area
+    /// at (0, 0) where it would stick out.
+    pub fn placed_within(&self, x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x: x.clamp(0, (w - self.w).max(0)), y: y.clamp(0, (h - self.h).max(0)), ..*self }
     }
 
     pub fn intersect(&self, other: &Rect) -> Option<Rect> {

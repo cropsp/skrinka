@@ -28,6 +28,8 @@ const HELP: &str =
 const HELP_TOP: i32 = 40;
 /// Gap between the size label and the selection below it.
 const LABEL_GAP: i32 = 4;
+/// How far from an edge of the selection a press still grabs that edge.
+const HANDLE_HIT: i32 = 8;
 
 pub enum Outcome {
     Continue,
@@ -49,9 +51,47 @@ struct OverlayWindow {
     last_cursor: (i32, i32),
 }
 
+/// Where a window-local point lies relative to the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hit {
+    Outside,
+    Inside,
+    Edge(Side),
+    Corner(Corner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragKind {
+    /// A new selection spanned by the press point and the cursor.
+    Draw,
+    /// The selection follows the cursor; `grab` is the cursor's offset from its top-left corner
+    /// at press time.
+    Move { grab: (i32, i32) },
+    /// `fixed` is the corner that stays, `moving` the one that follows the cursor on the axes
+    /// that move; an edge freezes one axis.
+    Resize { fixed: (i32, i32), moving: (i32, i32), move_x: bool, move_y: bool },
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Drag {
     win: usize,
+    kind: DragKind,
     start: (i32, i32),
     cur: (i32, i32),
 }
@@ -148,16 +188,24 @@ impl OverlaySession {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let at = self.windows[idx].last_cursor;
-                self.selection = None;
-                self.drag = Some(Drag { win: idx, start: at, cur: at });
+                let kind = press_kind(self.selection_on(idx), at);
+                self.drag = Some(Drag { win: idx, kind, start: at, cur: at });
                 self.started = true;
-                // Also clears a selection on another monitor and the help line everywhere.
-                self.redraw_all();
+                if kind == DragKind::Draw {
+                    self.selection = None;
+                    // Also clears a selection on another monitor and the help line everywhere.
+                    self.redraw_all();
+                } else {
+                    self.windows[idx].window.request_redraw();
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if let Some(drag) = self.drag.filter(|d| d.win == idx) {
+                    let rect = drag.rect(self.selection_on(idx), self.windows[idx].size());
                     self.drag = None;
-                    self.selection = Some(Selection { win: idx, rect: Rect::from_corners(drag.start, drag.cur) });
+                    // A plain click outside the selection leaves nothing selected.
+                    let click = drag.kind == DragKind::Draw && drag.start == drag.cur;
+                    self.selection = (!click).then_some(Selection { win: idx, rect });
                     self.windows[idx].window.request_redraw();
                 }
             }
@@ -227,12 +275,17 @@ impl OverlaySession {
         }
     }
 
+    /// The selection, if it is on window `idx`.
+    fn selection_on(&self, idx: usize) -> Option<Rect> {
+        self.selection.filter(|s| s.win == idx).map(|s| s.rect)
+    }
+
     /// The rectangle to show on window `idx`: the one being dragged, else the selection.
     fn live_rect(&self, idx: usize) -> Option<Rect> {
-        match (self.drag, self.selection) {
-            (Some(d), _) if d.win == idx => Some(Rect::from_corners(d.start, d.cur)),
-            (None, Some(s)) if s.win == idx => Some(s.rect),
-            _ => None,
+        match self.drag {
+            Some(d) if d.win == idx => Some(d.rect(self.selection_on(idx), self.windows[idx].size())),
+            Some(_) => None,
+            None => self.selection_on(idx),
         }
     }
 
@@ -330,6 +383,73 @@ impl OverlayWindow {
         });
 
         Ok(OverlayWindow { window, _context: context, surface, monitor, base, dimmed, last_cursor })
+    }
+
+    /// Width and height in pixels; the window covers its monitor exactly.
+    fn size(&self) -> (i32, i32) {
+        (self.monitor.w, self.monitor.h)
+    }
+}
+
+impl Drag {
+    /// The rectangle this drag shows with the cursor at `cur`, inside a window of `(w, h)`.
+    /// `selection` is the selection on the drag's window; only `Move` needs it.
+    fn rect(&self, selection: Option<Rect>, (w, h): (i32, i32)) -> Rect {
+        let (cx, cy) = self.cur;
+        match (self.kind, selection) {
+            (DragKind::Move { grab: (gx, gy) }, Some(r)) => r.placed_within(cx - gx, cy - gy, w, h),
+            (DragKind::Resize { fixed, moving, move_x, move_y }, _) => {
+                let nx = if move_x { cx } else { moving.0 };
+                let ny = if move_y { cy } else { moving.1 };
+                // Crossing the fixed corner flips the rectangle; `fixed` itself never changes.
+                Rect::from_corners(fixed, (nx, ny))
+            }
+            _ => Rect::from_corners(self.start, self.cur),
+        }
+    }
+}
+
+/// Where `p` lies relative to the selection `r`, both in the same window's pixels. Corners win
+/// over edges, left over right and top over bottom, so in a tiny selection everything is the
+/// top-left corner.
+fn hit_test(r: Rect, p: (i32, i32)) -> Hit {
+    let (px, py) = p;
+    let near_left = (px - r.x).abs() <= HANDLE_HIT;
+    let near_right = (px - r.right()).abs() <= HANDLE_HIT;
+    let near_top = (py - r.y).abs() <= HANDLE_HIT;
+    let near_bottom = (py - r.bottom()).abs() <= HANDLE_HIT;
+    let within_x = r.x - HANDLE_HIT <= px && px <= r.right() + HANDLE_HIT;
+    let within_y = r.y - HANDLE_HIT <= py && py <= r.bottom() + HANDLE_HIT;
+    match (near_left || near_right, near_top || near_bottom) {
+        (true, true) => Hit::Corner(match (near_left, near_top) {
+            (true, true) => Corner::TopLeft,
+            (false, true) => Corner::TopRight,
+            (true, false) => Corner::BottomLeft,
+            (false, false) => Corner::BottomRight,
+        }),
+        (true, false) if within_y => Hit::Edge(if near_left { Side::Left } else { Side::Right }),
+        (false, true) if within_x => Hit::Edge(if near_top { Side::Top } else { Side::Bottom }),
+        _ if r.contains(p) => Hit::Inside,
+        _ => Hit::Outside,
+    }
+}
+
+/// The drag a left press at `p` starts, given the selection on the same window.
+fn press_kind(selection: Option<Rect>, p: (i32, i32)) -> DragKind {
+    let Some(r) = selection else { return DragKind::Draw };
+    let (left, right, top, bottom) = (r.x, r.right(), r.y, r.bottom());
+    let resize = |fixed, moving, move_x, move_y| DragKind::Resize { fixed, moving, move_x, move_y };
+    match hit_test(r, p) {
+        Hit::Outside => DragKind::Draw,
+        Hit::Inside => DragKind::Move { grab: (p.0 - left, p.1 - top) },
+        Hit::Corner(Corner::TopLeft) => resize((right, bottom), (left, top), true, true),
+        Hit::Corner(Corner::TopRight) => resize((left, bottom), (right, top), true, true),
+        Hit::Corner(Corner::BottomLeft) => resize((right, top), (left, bottom), true, true),
+        Hit::Corner(Corner::BottomRight) => resize((left, top), (right, bottom), true, true),
+        Hit::Edge(Side::Left) => resize((right, bottom), (left, top), true, false),
+        Hit::Edge(Side::Right) => resize((left, top), (right, bottom), true, false),
+        Hit::Edge(Side::Top) => resize((right, bottom), (left, top), false, true),
+        Hit::Edge(Side::Bottom) => resize((left, top), (right, bottom), false, true),
     }
 }
 
@@ -430,6 +550,102 @@ mod tests {
         assert_eq!(at(5, 4), BORDER_COLOR);
         assert_eq!(at(1, 3), BORDER_COLOR);
         assert_eq!(at(4, 2), BORDER_COLOR);
+    }
+
+    /// Left 100, right 299, top 100, bottom 199.
+    const SEL: Rect = Rect { x: 100, y: 100, w: 200, h: 100 };
+    const WINDOW: (i32, i32) = (1920, 1080);
+
+    fn drag_to(selection: Rect, press: (i32, i32), cur: (i32, i32)) -> Rect {
+        let drag = Drag { win: 0, kind: press_kind(Some(selection), press), start: press, cur };
+        drag.rect(Some(selection), WINDOW)
+    }
+
+    #[test]
+    fn hit_inside_edges_and_corners() {
+        assert_eq!(hit_test(SEL, (200, 150)), Hit::Inside);
+        assert_eq!(hit_test(SEL, (100, 150)), Hit::Edge(Side::Left));
+        assert_eq!(hit_test(SEL, (299, 150)), Hit::Edge(Side::Right));
+        assert_eq!(hit_test(SEL, (200, 100)), Hit::Edge(Side::Top));
+        assert_eq!(hit_test(SEL, (200, 199)), Hit::Edge(Side::Bottom));
+        assert_eq!(hit_test(SEL, (100, 100)), Hit::Corner(Corner::TopLeft));
+        assert_eq!(hit_test(SEL, (299, 100)), Hit::Corner(Corner::TopRight));
+        assert_eq!(hit_test(SEL, (100, 199)), Hit::Corner(Corner::BottomLeft));
+        assert_eq!(hit_test(SEL, (299, 199)), Hit::Corner(Corner::BottomRight));
+    }
+
+    #[test]
+    fn hit_reaches_8_px_outside_an_edge() {
+        assert_eq!(hit_test(SEL, (92, 150)), Hit::Edge(Side::Left));
+        assert_eq!(hit_test(SEL, (91, 150)), Hit::Outside);
+        assert_eq!(hit_test(SEL, (307, 150)), Hit::Edge(Side::Right));
+        assert_eq!(hit_test(SEL, (308, 150)), Hit::Outside);
+        assert_eq!(hit_test(SEL, (200, 92)), Hit::Edge(Side::Top));
+        assert_eq!(hit_test(SEL, (200, 91)), Hit::Outside);
+        assert_eq!(hit_test(SEL, (200, 207)), Hit::Edge(Side::Bottom));
+        assert_eq!(hit_test(SEL, (200, 208)), Hit::Outside);
+        assert_eq!(hit_test(SEL, (92, 92)), Hit::Corner(Corner::TopLeft));
+        assert_eq!(hit_test(SEL, (91, 92)), Hit::Outside);
+    }
+
+    #[test]
+    fn tiny_selection_is_all_corner() {
+        let r = Rect::new(10, 10, 3, 3);
+        for y in 10..13 {
+            for x in 10..13 {
+                assert_eq!(hit_test(r, (x, y)), Hit::Corner(Corner::TopLeft), "at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn press_outside_or_without_selection_draws() {
+        assert_eq!(press_kind(None, (200, 150)), DragKind::Draw);
+        assert_eq!(press_kind(Some(SEL), (50, 50)), DragKind::Draw);
+        assert_eq!(press_kind(Some(SEL), (130, 160)), DragKind::Move { grab: (30, 60) });
+    }
+
+    #[test]
+    fn resize_past_the_fixed_corner_flips() {
+        // Bottom-right corner dragged up-left past the top-left one.
+        let r = drag_to(SEL, (299, 199), (50, 40));
+        assert_eq!(r, Rect::new(50, 40, 51, 61));
+        assert_eq!((r.right(), r.bottom()), (100, 100));
+    }
+
+    #[test]
+    fn right_edge_drag_keeps_y_and_height() {
+        for cur in [(400, 10), (20, 1000), (299, 150), (100, 199)] {
+            let r = drag_to(SEL, (299, 150), cur);
+            assert_eq!((r.y, r.h), (SEL.y, SEL.h), "cursor at {cur:?}");
+        }
+        assert_eq!(drag_to(SEL, (299, 150), (400, 10)), Rect::new(100, 100, 301, 100));
+        assert_eq!(drag_to(SEL, (299, 150), (20, 10)), Rect::new(20, 100, 81, 100));
+    }
+
+    #[test]
+    fn top_left_corner_drag_moves_both_axes() {
+        assert_eq!(drag_to(SEL, (100, 100), (150, 120)), Rect::new(150, 120, 150, 80));
+    }
+
+    #[test]
+    fn move_is_clamped_to_the_window() {
+        // Grabbed 100 px right of and 50 px below the top-left corner.
+        let grab = (200, 150);
+        assert_eq!(drag_to(SEL, grab, (250, 170)), Rect::new(150, 120, 200, 100));
+        // Left and top.
+        assert_eq!(drag_to(SEL, grab, (5, 5)), Rect::new(0, 0, 200, 100));
+        // Right and bottom.
+        assert_eq!(drag_to(SEL, grab, (1919, 1079)), Rect::new(1720, 980, 200, 100));
+        // One axis at a time.
+        assert_eq!(drag_to(SEL, grab, (1919, 170)), Rect::new(1720, 120, 200, 100));
+        assert_eq!(drag_to(SEL, grab, (250, 0)), Rect::new(150, 0, 200, 100));
+    }
+
+    #[test]
+    fn draw_spans_press_and_cursor() {
+        let drag = Drag { win: 0, kind: DragKind::Draw, start: (40, 30), cur: (10, 20) };
+        assert_eq!(drag.rect(None, WINDOW), Rect::new(10, 20, 31, 11));
     }
 
     #[test]
