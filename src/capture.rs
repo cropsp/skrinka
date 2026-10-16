@@ -1,11 +1,12 @@
-use image::RgbaImage;
+use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
     SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
 };
 
 /// The whole virtual screen in physical pixels.
@@ -19,19 +20,16 @@ pub struct Capture {
     pub pixels: Vec<u32>,
 }
 
-impl Capture {
-    pub fn to_rgba_image(&self) -> RgbaImage {
-        let mut bytes = Vec::with_capacity(self.pixels.len() * 4);
-        for &p in &self.pixels {
-            bytes.extend_from_slice(&to_rgba(p));
-        }
-        RgbaImage::from_raw(self.width, self.height, bytes).expect("buffer size matches dimensions")
-    }
-}
-
 /// `0x00RRGGBB` → `[r, g, b, 255]`
 pub fn to_rgba(pixel: u32) -> [u8; 4] {
     [(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]
+}
+
+/// Mouse position in physical virtual-screen pixels.
+pub fn cursor_position() -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
 }
 
 /// Grabs every monitor with one `BitBlt` of the virtual screen.
@@ -111,13 +109,5 @@ mod tests {
     fn xrgb_to_rgba() {
         assert_eq!(to_rgba(0x00E3_4133), [0xE3, 0x41, 0x33, 255]);
         assert_eq!(to_rgba(0x0000_00FF), [0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn whole_capture_to_image() {
-        let capture = Capture { x0: -2, y0: 0, width: 2, height: 1, pixels: vec![0xFF0000, 0x00FF00] };
-        let image = capture.to_rgba_image();
-        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
     }
 }

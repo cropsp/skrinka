@@ -4,7 +4,10 @@ mod app;
 mod capture;
 mod config;
 mod dialog;
+mod hotkeys;
+mod output;
 mod tray;
+mod util;
 
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;

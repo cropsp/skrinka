@@ -13,6 +13,11 @@ pub fn error_async(text: String) {
     std::thread::spawn(move || error(&text));
 }
 
+/// Like [`error_async`], with a warning icon.
+pub fn warning_async(text: String) {
+    std::thread::spawn(move || show(MessageLevel::Warning, &text));
+}
+
 fn show(level: MessageLevel, text: &str) {
     let _ = MessageDialog::new()
         .set_level(level)

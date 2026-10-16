@@ -8,12 +8,16 @@ use tray_icon::menu::{MenuEvent, MenuId};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::monitor::MonitorHandle;
 use winit::window::WindowId;
 
-use crate::capture;
-use crate::config::Config;
+use crate::capture::{self, Capture};
+use crate::config::{Config, FullscreenMode};
 use crate::dialog;
+use crate::hotkeys::Hotkeys;
+use crate::output::{self, Action, WorkerResult};
 use crate::tray::Tray;
+use crate::util::{self, Rect};
 
 /// `EventLoopProxy` is `Send` but not `Sync` on Windows, while the tauri-apps event handlers
 /// must be `Send + Sync`, hence the mutex.
@@ -21,7 +25,10 @@ pub type SharedProxy = Arc<Mutex<EventLoopProxy<UserEvent>>>;
 
 #[derive(Debug)]
 pub enum UserEvent {
+    HotkeyRegion,
+    HotkeyFullscreen,
     TrayMenu(MenuId),
+    WorkerDone(WorkerResult),
 }
 
 pub fn send_event(proxy: &SharedProxy, event: UserEvent) {
@@ -35,12 +42,13 @@ pub struct App {
     config: Config,
     initialized: bool,
     tray: Option<Tray>,
+    hotkeys: Option<Hotkeys>,
     fatal_error: Option<String>,
 }
 
 impl App {
     pub fn new(config: Config, proxy: SharedProxy) -> App {
-        App { proxy, config, initialized: false, tray: None, fatal_error: None }
+        App { proxy, config, initialized: false, tray: None, hotkeys: None, fatal_error: None }
     }
 
     /// Set when the app had to stop because it could not start properly.
@@ -65,6 +73,19 @@ impl App {
             send_event(&proxy, UserEvent::TrayMenu(e.id));
         }));
 
+        match Hotkeys::new(self.proxy.clone()) {
+            Ok(mut hotkeys) => {
+                if let Some(problems) = hotkeys.register(&self.config) {
+                    dialog::warning_async(problems);
+                }
+                self.hotkeys = Some(hotkeys);
+            }
+            Err(e) => {
+                error!("cannot set up global hotkeys: {e:#}");
+                dialog::error_async(format!("Could not set up the global hotkeys: {e:#}"));
+            }
+        }
+
         log_monitors(event_loop);
         info!("ready; screenshots go to {}", self.config.save_dir.display());
     }
@@ -79,30 +100,44 @@ impl App {
         }
     }
 
+    fn capture_fullscreen(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(capture) = capture_or_report() else { return };
+        let rect = match self.config.fullscreen_mode {
+            FullscreenMode::AllMonitors => capture.rect(),
+            FullscreenMode::CursorMonitor => cursor_monitor(event_loop)
+                .map_or(capture.rect(), |monitor| capture.screen_to_capture(monitor)),
+        };
+        let Some(image) = util::crop_rgba(&capture, rect) else {
+            error!("full-screen capture: {rect:?} is outside the capture");
+            return;
+        };
+        info!("full-screen capture of {rect:?}");
+        output::spawn(image, Action::ClipboardAndAutoSave, self.config.clone(), self.proxy.clone());
+    }
+
+    fn on_worker_done(&mut self, result: WorkerResult) {
+        match (&result.error, &result.saved_path) {
+            (Some(_), _) => info!("{:?} finished with errors", result.action),
+            (None, Some(path)) => info!("{:?} finished: {}", result.action, path.display()),
+            (None, None) => info!("{:?} finished", result.action),
+        }
+    }
+
     /// Saves the whole virtual screen to `save_dir/debug_capture.png`.
     fn debug_dump_capture(&self) {
-        let capture = match capture::capture_virtual_screen() {
-            Ok(capture) => capture,
-            Err(e) => {
-                error!("capture failed: {e:#}");
-                dialog::error_async(format!("Capture failed: {e:#}"));
-                return;
-            }
-        };
+        let Some(capture) = capture_or_report() else { return };
         info!(
             "captured the virtual screen: origin ({}, {}), {}x{}",
             capture.x0, capture.y0, capture.width, capture.height
         );
+        let Some(image) = util::crop_rgba(&capture, capture.rect()) else { return };
         let dir = self.config.save_dir.clone();
         thread::spawn(move || {
             let path = dir.join("debug_capture.png");
             let result = fs::create_dir_all(&dir)
                 .with_context(|| format!("cannot create {}", dir.display()))
                 .and_then(|()| {
-                    capture
-                        .to_rgba_image()
-                        .save(&path)
-                        .with_context(|| format!("cannot save {}", path.display()))
+                    image.save(&path).with_context(|| format!("cannot save {}", path.display()))
                 });
             match result {
                 Ok(()) => info!("debug capture saved to {}", path.display()),
@@ -115,16 +150,40 @@ impl App {
     }
 }
 
+fn capture_or_report() -> Option<Capture> {
+    capture::capture_virtual_screen()
+        .map_err(|e| {
+            error!("capture failed: {e:#}");
+            dialog::error_async(format!("Capture failed: {e:#}"));
+        })
+        .ok()
+}
+
+/// Monitor rectangle in physical virtual-screen pixels.
+fn monitor_rect(monitor: &MonitorHandle) -> Rect {
+    let (pos, size) = (monitor.position(), monitor.size());
+    Rect::new(pos.x, pos.y, size.width as i32, size.height as i32)
+}
+
+/// The monitor under the mouse cursor, else the primary one.
+fn cursor_monitor(event_loop: &ActiveEventLoop) -> Option<Rect> {
+    let monitors: Vec<Rect> = event_loop.available_monitors().map(|m| monitor_rect(&m)).collect();
+    capture::cursor_position()
+        .and_then(|point| util::find_containing(&monitors, point))
+        .map(|i| monitors[i])
+        .or_else(|| event_loop.primary_monitor().map(|m| monitor_rect(&m)))
+}
+
 fn log_monitors(event_loop: &ActiveEventLoop) {
     for (i, monitor) in event_loop.available_monitors().enumerate() {
-        let (pos, size) = (monitor.position(), monitor.size());
+        let rect = monitor_rect(&monitor);
         info!(
             "monitor {i} {:?}: position ({}, {}), size {}x{} physical px, scale {}",
             monitor.name().unwrap_or_default(),
-            pos.x,
-            pos.y,
-            size.width,
-            size.height,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
             monitor.scale_factor()
         );
     }
@@ -141,7 +200,10 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::HotkeyRegion => info!("region hotkey pressed; the overlay arrives in step 4"),
+            UserEvent::HotkeyFullscreen => self.capture_fullscreen(event_loop),
             UserEvent::TrayMenu(id) => self.on_menu(event_loop, id),
+            UserEvent::WorkerDone(result) => self.on_worker_done(result),
         }
     }
 
