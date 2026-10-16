@@ -16,6 +16,7 @@ use crate::config::{Config, FullscreenMode};
 use crate::dialog;
 use crate::hotkeys::Hotkeys;
 use crate::output::{self, Action, WorkerResult};
+use crate::overlay::{OverlaySession, Outcome};
 use crate::tray::Tray;
 use crate::util::{self, Rect};
 
@@ -43,12 +44,21 @@ pub struct App {
     initialized: bool,
     tray: Option<Tray>,
     hotkeys: Option<Hotkeys>,
+    overlay: Option<OverlaySession>,
     fatal_error: Option<String>,
 }
 
 impl App {
     pub fn new(config: Config, proxy: SharedProxy) -> App {
-        App { proxy, config, initialized: false, tray: None, hotkeys: None, fatal_error: None }
+        App {
+            proxy,
+            config,
+            initialized: false,
+            tray: None,
+            hotkeys: None,
+            overlay: None,
+            fatal_error: None,
+        }
     }
 
     /// Set when the app had to stop because it could not start properly.
@@ -100,7 +110,41 @@ impl App {
         }
     }
 
+    fn capture_region(&mut self, event_loop: &ActiveEventLoop) {
+        if self.overlay.is_some() {
+            return;
+        }
+        // Captured before any overlay window exists, so none of them is in the shot.
+        let Some(capture) = capture_or_report() else { return };
+        match OverlaySession::open(event_loop, capture) {
+            Ok(overlay) => self.overlay = Some(overlay),
+            Err(e) => {
+                error!("cannot open the region overlay: {e:#}");
+                dialog::error_async(format!("Could not open the region overlay: {e:#}"));
+            }
+        }
+    }
+
+    fn on_overlay_event(&mut self, id: WindowId, event: WindowEvent) {
+        let Some(overlay) = &mut self.overlay else { return };
+        match overlay.window_event(id, event) {
+            Outcome::Continue => {}
+            Outcome::Cancel => {
+                info!("region capture cancelled");
+                self.overlay = None;
+            }
+            Outcome::Finish(image, action) => {
+                // The overlay goes first, so a dialog can never open underneath it.
+                self.overlay = None;
+                output::spawn(image, action, self.config.clone(), self.proxy.clone());
+            }
+        }
+    }
+
     fn capture_fullscreen(&mut self, event_loop: &ActiveEventLoop) {
+        if self.overlay.is_some() {
+            return;
+        }
         let Some(capture) = capture_or_report() else { return };
         let rect = match self.config.fullscreen_mode {
             FullscreenMode::AllMonitors => capture.rect(),
@@ -200,12 +244,14 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::HotkeyRegion => info!("region hotkey pressed; the overlay arrives in step 4"),
+            UserEvent::HotkeyRegion => self.capture_region(event_loop),
             UserEvent::HotkeyFullscreen => self.capture_fullscreen(event_loop),
             UserEvent::TrayMenu(id) => self.on_menu(event_loop, id),
             UserEvent::WorkerDone(result) => self.on_worker_done(result),
         }
     }
 
-    fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, _event: WindowEvent) {}
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.on_overlay_event(id, event);
+    }
 }

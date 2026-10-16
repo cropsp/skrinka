@@ -17,6 +17,11 @@ impl Rect {
         Rect { x, y, w, h }
     }
 
+    /// The rectangle spanned by two corner pixels given in any order; both corners are inside.
+    pub fn from_corners((x0, y0): (i32, i32), (x1, y1): (i32, i32)) -> Rect {
+        Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs() + 1, (y1 - y0).abs() + 1)
+    }
+
     pub fn contains(&self, (px, py): (i32, i32)) -> bool {
         self.x <= px && px < self.x + self.w && self.y <= py && py < self.y + self.h
     }
@@ -45,6 +50,12 @@ impl Capture {
     pub fn screen_to_capture(&self, rect: Rect) -> Rect {
         rect.offset(-self.x0, -self.y0)
     }
+}
+
+/// A window-local cursor position as a pixel inside a `w`×`h` window. While a mouse button is
+/// held the window keeps receiving positions from outside itself, hence the clamp.
+pub fn clamp_to_window(x: f64, y: f64, w: i32, h: i32) -> (i32, i32) {
+    ((x.floor() as i32).clamp(0, w - 1), (y.floor() as i32).clamp(0, h - 1))
 }
 
 /// Index of the first rectangle containing the point.
@@ -87,6 +98,24 @@ mod tests {
         assert_eq!(cap.screen_to_capture(rect.offset(-1920, 0)), Rect::new(10, 20, 30, 40));
         // Primary monitor at (0, 0).
         assert_eq!(cap.screen_to_capture(rect.offset(0, 0)), Rect::new(1930, 20, 30, 40));
+    }
+
+    #[test]
+    fn rect_from_any_two_corners() {
+        let expected = Rect::new(10, 20, 31, 41);
+        assert_eq!(Rect::from_corners((10, 20), (40, 60)), expected);
+        assert_eq!(Rect::from_corners((40, 60), (10, 20)), expected);
+        assert_eq!(Rect::from_corners((10, 60), (40, 20)), expected);
+        assert_eq!(Rect::from_corners((40, 20), (10, 60)), expected);
+        assert_eq!(Rect::from_corners((5, 5), (5, 5)), Rect::new(5, 5, 1, 1));
+    }
+
+    #[test]
+    fn cursor_is_clamped_into_the_window() {
+        assert_eq!(clamp_to_window(10.7, 20.2, 1920, 1080), (10, 20));
+        assert_eq!(clamp_to_window(-35.0, -0.5, 1920, 1080), (0, 0));
+        assert_eq!(clamp_to_window(1920.0, 5000.0, 1920, 1080), (1919, 1079));
+        assert_eq!(clamp_to_window(f64::NAN, 1e12, 1920, 1080), (0, 1079));
     }
 
     #[test]

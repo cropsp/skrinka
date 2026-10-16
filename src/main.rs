@@ -6,6 +6,7 @@ mod config;
 mod dialog;
 mod hotkeys;
 mod output;
+mod overlay;
 mod tray;
 mod util;
 
