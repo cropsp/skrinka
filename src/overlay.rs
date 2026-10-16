@@ -118,7 +118,7 @@ impl OverlaySession {
             win.window.request_redraw();
         }
         if !windows[focused].window.has_focus() {
-            info!("the overlay did not get the keyboard focus; the first click will focus it");
+            info!("winit reports no keyboard focus on the overlay yet; a click will focus it");
         }
         info!("region overlay open on {} monitor(s)", windows.len());
 
@@ -185,10 +185,13 @@ impl OverlaySession {
                 let m = self.windows[idx].monitor;
                 let _ = inner_size_writer.request_inner_size(PhysicalSize::new(m.w as u32, m.h as u32));
             }
-            WindowEvent::Resized(size) => {
-                let m = self.windows[idx].monitor;
-                if (size.width as i32, size.height as i32) != (m.w, m.h) {
-                    warn!("overlay for {m:?} was resized to {}x{}", size.width, size.height);
+            WindowEvent::Resized(_) => {
+                // Resize events from window creation (Windows' default size) arrive late, after
+                // the window already has its final size, so the current size is what counts.
+                let win = &self.windows[idx];
+                let size = win.window.inner_size();
+                if (size.width as i32, size.height as i32) != (win.monitor.w, win.monitor.h) {
+                    warn!("overlay for {:?} is now {}x{}", win.monitor, size.width, size.height);
                 }
             }
             _ => {}
