@@ -5,12 +5,13 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use log::{error, info};
 
 use crate::app::{send_event, SharedProxy, UserEvent};
-use crate::config::{Config, DEFAULT_HOTKEY_FULLSCREEN, DEFAULT_HOTKEY_REGION};
+use crate::config::{Config, DEFAULT_HOTKEY_FULLSCREEN, DEFAULT_HOTKEY_REGION, DEFAULT_HOTKEY_WINDOW};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Ids {
     region: Option<u32>,
     fullscreen: Option<u32>,
+    window: Option<u32>,
 }
 
 pub struct Hotkeys {
@@ -23,6 +24,7 @@ pub struct Hotkeys {
     /// For the tray menu: the hotkey in effect, or why there is none.
     pub region_label: String,
     pub fullscreen_label: String,
+    pub window_label: String,
 }
 
 impl Hotkeys {
@@ -40,6 +42,8 @@ impl Hotkeys {
                 UserEvent::HotkeyRegion
             } else if Some(e.id) == ids.fullscreen {
                 UserEvent::HotkeyFullscreen
+            } else if Some(e.id) == ids.window {
+                UserEvent::HotkeyWindow
             } else {
                 return;
             };
@@ -51,10 +55,11 @@ impl Hotkeys {
             ids,
             region_label: String::new(),
             fullscreen_label: String::new(),
+            window_label: String::new(),
         })
     }
 
-    /// Registers both hotkeys from the config, replacing the previous ones. Returns a message
+    /// Registers the hotkeys from the config, replacing the previous ones. Returns a message
     /// for the user if a hotkey could not be registered.
     pub fn register(&mut self, config: &Config) -> Option<String> {
         if !self.registered.is_empty() {
@@ -72,9 +77,12 @@ impl Hotkeys {
             DEFAULT_HOTKEY_FULLSCREEN,
             &mut problems,
         );
-        *self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Ids { region, fullscreen };
+        let (window, window_label) =
+            self.register_one("hotkey_window", &config.hotkey_window, DEFAULT_HOTKEY_WINDOW, &mut problems);
+        *self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Ids { region, fullscreen, window };
         self.region_label = region_label;
         self.fullscreen_label = fullscreen_label;
+        self.window_label = window_label;
         (!problems.is_empty()).then(|| problems.join("\n\n"))
     }
 

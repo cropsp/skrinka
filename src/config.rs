@@ -11,19 +11,32 @@ const HEADER: &str = r#"# Skrinka configuration. Edit, then use "Reload config" 
 # filename_format    strftime template, e.g. 'Screenshot %Y-%m-%d %H-%M-%S'; ".png" is added automatically
 # hotkey_region      region capture hotkey, e.g. 'Shift+Alt+2'
 # hotkey_fullscreen  full-screen capture hotkey, e.g. 'Shift+Alt+1'
+# hotkey_window      active window capture hotkey, e.g. 'Shift+Alt+3'
 # fullscreen_mode    'cursor_monitor' (the monitor under the mouse) or 'all_monitors'
+# window_capture     'visible' (the window as you see it, title bar included) or 'client' (its contents only)
 # last_save_as_dir   folder of the last "Save as" (maintained by the program)
 "#;
 
 pub const DEFAULT_FILENAME_FORMAT: &str = "Screenshot %Y-%m-%d %H-%M-%S";
 pub const DEFAULT_HOTKEY_REGION: &str = "Shift+Alt+2";
 pub const DEFAULT_HOTKEY_FULLSCREEN: &str = "Shift+Alt+1";
+pub const DEFAULT_HOTKEY_WINDOW: &str = "Shift+Alt+3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FullscreenMode {
     CursorMonitor,
     AllMonitors,
+}
+
+/// What "capture window" takes of the active window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowCapture {
+    /// The window as drawn: frame and title bar, without the invisible resize borders.
+    Visible,
+    /// The client area only, without the title bar.
+    Client,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,7 +46,9 @@ pub struct Config {
     pub filename_format: String,
     pub hotkey_region: String,
     pub hotkey_fullscreen: String,
+    pub hotkey_window: String,
     pub fullscreen_mode: FullscreenMode,
+    pub window_capture: WindowCapture,
     /// Empty until the first "Save as".
     pub last_save_as_dir: PathBuf,
 }
@@ -48,7 +63,9 @@ impl Default for Config {
             filename_format: DEFAULT_FILENAME_FORMAT.to_owned(),
             hotkey_region: DEFAULT_HOTKEY_REGION.to_owned(),
             hotkey_fullscreen: DEFAULT_HOTKEY_FULLSCREEN.to_owned(),
+            hotkey_window: DEFAULT_HOTKEY_WINDOW.to_owned(),
             fullscreen_mode: FullscreenMode::CursorMonitor,
+            window_capture: WindowCapture::Visible,
             last_save_as_dir: PathBuf::new(),
         }
     }
@@ -111,6 +128,8 @@ mod tests {
             save_dir: PathBuf::from(r"C:\Users\Тест\Pictures\Screenshots"),
             last_save_as_dir: PathBuf::from(r"D:\some dir\with 'quotes'"),
             fullscreen_mode: FullscreenMode::AllMonitors,
+            window_capture: WindowCapture::Client,
+            hotkey_window: "Ctrl+Shift+3".to_owned(),
             ..Config::default()
         };
         let text = config.to_toml().unwrap();
@@ -131,6 +150,26 @@ mod tests {
         assert_eq!(config.filename_format, DEFAULT_FILENAME_FORMAT);
         assert_eq!(config.fullscreen_mode, FullscreenMode::CursorMonitor);
         assert_eq!(config.last_save_as_dir, PathBuf::new());
+    }
+
+    #[test]
+    fn v1_config_file_gets_the_v2_defaults() {
+        let v1 = "save_dir = 'C:\\Shots'\n\
+                  filename_format = 'x'\n\
+                  hotkey_region = 'Shift+Alt+2'\n\
+                  hotkey_fullscreen = 'Shift+Alt+1'\n\
+                  fullscreen_mode = 'cursor_monitor'\n\
+                  last_save_as_dir = ''\n";
+        let config = Config::parse(v1).unwrap();
+        assert_eq!(config.hotkey_window, DEFAULT_HOTKEY_WINDOW);
+        assert_eq!(config.window_capture, WindowCapture::Visible);
+    }
+
+    #[test]
+    fn window_capture_values() {
+        assert_eq!(Config::parse("window_capture = 'client'\n").unwrap().window_capture, WindowCapture::Client);
+        assert_eq!(Config::parse("window_capture = 'visible'\n").unwrap().window_capture, WindowCapture::Visible);
+        assert!(Config::parse("window_capture = 'whole'\n").is_err());
     }
 
     #[test]

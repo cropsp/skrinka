@@ -11,6 +11,7 @@ mod overlay;
 mod text;
 mod tray;
 mod util;
+mod window;
 
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;

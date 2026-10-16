@@ -3,12 +3,14 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 const CAPTURE_REGION: &str = "Capture region";
 const CAPTURE_FULLSCREEN: &str = "Capture full screen";
+const CAPTURE_WINDOW: &str = "Capture window";
 
 pub struct Tray {
     /// Dropping the `TrayIcon` removes the icon, so it lives as long as `App`.
     _icon: TrayIcon,
     pub capture_region: MenuItem,
     pub capture_fullscreen: MenuItem,
+    pub capture_window: MenuItem,
     pub open_folder: MenuItem,
     pub open_config: MenuItem,
     pub reload_config: MenuItem,
@@ -22,6 +24,7 @@ impl Tray {
     pub fn new(autostart_enabled: bool) -> anyhow::Result<Tray> {
         let capture_region = MenuItem::new(CAPTURE_REGION, true, None);
         let capture_fullscreen = MenuItem::new(CAPTURE_FULLSCREEN, true, None);
+        let capture_window = MenuItem::new(CAPTURE_WINDOW, true, None);
         let open_folder = MenuItem::new("Open screenshots folder", true, None);
         let open_config = MenuItem::new("Open config file", true, None);
         let reload_config = MenuItem::new("Reload config", true, None);
@@ -34,6 +37,7 @@ impl Tray {
         menu.append_items(&[
             &capture_region,
             &capture_fullscreen,
+            &capture_window,
             &PredefinedMenuItem::separator(),
             &open_folder,
             &open_config,
@@ -57,6 +61,7 @@ impl Tray {
             _icon: icon,
             capture_region,
             capture_fullscreen,
+            capture_window,
             open_folder,
             open_config,
             reload_config,
@@ -68,9 +73,10 @@ impl Tray {
 
     /// Shows the hotkeys next to the capture items. A tab right-aligns the text the way
     /// Windows menus show shortcuts; it is only a label, not a menu accelerator.
-    pub fn set_hotkey_labels(&self, region: &str, fullscreen: &str) {
+    pub fn set_hotkey_labels(&self, region: &str, fullscreen: &str, window: &str) {
         self.capture_region.set_text(format!("{CAPTURE_REGION}\t{region}"));
         self.capture_fullscreen.set_text(format!("{CAPTURE_FULLSCREEN}\t{fullscreen}"));
+        self.capture_window.set_text(format!("{CAPTURE_WINDOW}\t{window}"));
     }
 }
 

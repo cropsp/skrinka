@@ -25,6 +25,7 @@ use crate::overlay::{OverlaySession, Outcome};
 use crate::text::Text;
 use crate::tray::Tray;
 use crate::util::{self, Rect};
+use crate::window;
 
 /// `EventLoopProxy` is `Send` but not `Sync` on Windows, while the tauri-apps event handlers
 /// must be `Send + Sync`, hence the mutex.
@@ -34,6 +35,7 @@ pub type SharedProxy = Arc<Mutex<EventLoopProxy<UserEvent>>>;
 pub enum UserEvent {
     HotkeyRegion,
     HotkeyFullscreen,
+    HotkeyWindow,
     TrayMenu(MenuId),
     TrayDoubleClick,
     /// A capture chosen from the tray menu, sent once the menu has disappeared.
@@ -45,6 +47,7 @@ pub enum UserEvent {
 pub enum CaptureKind {
     Region,
     Fullscreen,
+    Window,
 }
 
 /// Time for the tray menu to vanish before the screen is captured.
@@ -144,7 +147,7 @@ impl App {
             dialog::warning_async(problems);
         }
         if let Some(tray) = &self.tray {
-            tray.set_hotkey_labels(&hotkeys.region_label, &hotkeys.fullscreen_label);
+            tray.set_hotkey_labels(&hotkeys.region_label, &hotkeys.fullscreen_label, &hotkeys.window_label);
         }
     }
 
@@ -154,6 +157,8 @@ impl App {
             TrayAction::Capture(CaptureKind::Region)
         } else if id == *tray.capture_fullscreen.id() {
             TrayAction::Capture(CaptureKind::Fullscreen)
+        } else if id == *tray.capture_window.id() {
+            TrayAction::Capture(CaptureKind::Window)
         } else if id == *tray.open_folder.id() {
             TrayAction::OpenFolder
         } else if id == *tray.open_config.id() {
@@ -287,14 +292,43 @@ impl App {
         let Some(capture) = capture_or_report() else { return };
         let rect = match self.config.fullscreen_mode {
             FullscreenMode::AllMonitors => capture.rect(),
-            FullscreenMode::CursorMonitor => cursor_monitor(event_loop)
-                .map_or(capture.rect(), |monitor| capture.screen_to_capture(monitor)),
+            FullscreenMode::CursorMonitor => cursor_monitor_in(event_loop, &capture),
         };
         let Some(image) = util::crop_rgba(&capture, rect) else {
             error!("full-screen capture: {rect:?} is outside the capture");
             return;
         };
         info!("full-screen capture of {rect:?}");
+        output::spawn(image, Action::ClipboardAndAutoSave, self.config.clone(), self.proxy.clone());
+    }
+
+    /// The active window; the monitor under the cursor when there is no sensible window, so
+    /// the hotkey always produces a screenshot. Screen-based: whatever overlaps the window is
+    /// in the picture.
+    fn capture_window(&mut self, event_loop: &ActiveEventLoop, from_menu: bool) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let Some(capture) = capture_or_report() else { return };
+        let monitors = monitor_rects(event_loop);
+        let target = window::foreground_window(self.config.window_capture, from_menu).and_then(|win| {
+            let rect = window::target_rect(win.rect, win.maximized, &monitors, &capture);
+            let maximized = if win.maximized { " (maximized)" } else { "" };
+            match rect {
+                Some(rect) => info!("window capture of {:?} at {:?}{maximized} → capture {rect:?}", win.title, win.rect),
+                None => warn!("window capture: {:?} at {:?}{maximized} is not on screen", win.title, win.rect),
+            }
+            rect
+        });
+        let rect = target.unwrap_or_else(|| {
+            let rect = cursor_monitor_in(event_loop, &capture);
+            warn!("window capture falls back to the monitor under the cursor: capture {rect:?}");
+            rect
+        });
+        let Some(image) = util::crop_rgba(&capture, rect) else {
+            error!("window capture: {rect:?} is outside the capture");
+            return;
+        };
         output::spawn(image, Action::ClipboardAndAutoSave, self.config.clone(), self.proxy.clone());
     }
 
@@ -416,13 +450,22 @@ fn monitor_rect(monitor: &MonitorHandle) -> Rect {
     Rect::new(pos.x, pos.y, size.width as i32, size.height as i32)
 }
 
+fn monitor_rects(event_loop: &ActiveEventLoop) -> Vec<Rect> {
+    event_loop.available_monitors().map(|m| monitor_rect(&m)).collect()
+}
+
 /// The monitor under the mouse cursor, else the primary one.
 fn cursor_monitor(event_loop: &ActiveEventLoop) -> Option<Rect> {
-    let monitors: Vec<Rect> = event_loop.available_monitors().map(|m| monitor_rect(&m)).collect();
+    let monitors = monitor_rects(event_loop);
     capture::cursor_position()
         .and_then(|point| util::find_containing(&monitors, point))
         .map(|i| monitors[i])
         .or_else(|| event_loop.primary_monitor().map(|m| monitor_rect(&m)))
+}
+
+/// `cursor_monitor` in capture coordinates; the whole capture if there is no monitor at all.
+fn cursor_monitor_in(event_loop: &ActiveEventLoop, capture: &Capture) -> Rect {
+    cursor_monitor(event_loop).map_or(capture.rect(), |monitor| capture.screen_to_capture(monitor))
 }
 
 fn log_monitors(event_loop: &ActiveEventLoop) {
@@ -453,10 +496,12 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::HotkeyRegion => self.capture_region(event_loop),
             UserEvent::HotkeyFullscreen => self.capture_fullscreen(event_loop),
+            UserEvent::HotkeyWindow => self.capture_window(event_loop, false),
             UserEvent::TrayMenu(id) => self.on_menu(event_loop, id),
             UserEvent::TrayDoubleClick => self.open_folder(),
             UserEvent::DelayedCapture(CaptureKind::Region) => self.capture_region(event_loop),
             UserEvent::DelayedCapture(CaptureKind::Fullscreen) => self.capture_fullscreen(event_loop),
+            UserEvent::DelayedCapture(CaptureKind::Window) => self.capture_window(event_loop, true),
             UserEvent::WorkerDone(result) => self.on_worker_done(result),
         }
     }
