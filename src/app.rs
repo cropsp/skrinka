@@ -17,7 +17,7 @@ use winit::window::WindowId;
 
 use crate::autostart;
 use crate::capture::{self, Capture};
-use crate::config::{Config, FullscreenMode};
+use crate::config::{Config, FullscreenMode, Notifications};
 use crate::dialog;
 use crate::hotkeys::Hotkeys;
 use crate::output::{self, Action, WorkerResult};
@@ -345,6 +345,30 @@ impl App {
             if let Some(dir) = result.saved_path.as_deref().and_then(Path::parent) {
                 self.remember_save_as_dir(dir);
             }
+        }
+        // Errors have already been shown in a dialog.
+        if result.error.is_none() {
+            self.notify_done(&result);
+        }
+    }
+
+    /// The tray notification for a finished screenshot, as `notifications` asks for.
+    fn notify_done(&self, result: &WorkerResult) {
+        let Some(tray) = &self.tray else { return };
+        match (self.config.notifications, &result.saved_path, result.action) {
+            (Notifications::Off, _, _) => {}
+            (_, Some(path), _) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let folder = path.parent().map(Path::display);
+                let folder = folder.map(|f| f.to_string()).unwrap_or_default();
+                tray.notify("Screenshot saved", &format!("{name}\n{folder}"));
+            }
+            (Notifications::All, None, Action::ClipboardOnly) => {
+                let (w, h) = result.size;
+                tray.notify("Copied to clipboard", &format!("{w} × {h}"));
+            }
+            // "Save as" cancelled, or clipboard only with `saves`.
+            _ => {}
         }
     }
 

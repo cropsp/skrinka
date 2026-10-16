@@ -34,6 +34,8 @@ pub struct WorkerResult {
     pub action: Action,
     pub saved_path: Option<PathBuf>,
     pub error: Option<String>,
+    /// Width and height of the screenshot.
+    pub size: (u32, u32),
 }
 
 pub fn spawn(image: RgbaImage, action: Action, config: Config, proxy: SharedProxy) {
@@ -61,13 +63,14 @@ pub fn spawn(image: RgbaImage, action: Action, config: Config, proxy: SharedProx
             },
         };
         // Freed before reporting back, so the main thread can hand the memory back to Windows.
+        let size = image.dimensions();
         drop(image);
         let error = (!errors.is_empty()).then(|| errors.join("\n\n"));
         if let Some(text) = &error {
             error!("{action:?} failed: {text}");
             dialog::error(text);
         }
-        send_event(&proxy, UserEvent::WorkerDone(WorkerResult { action, saved_path, error }));
+        send_event(&proxy, UserEvent::WorkerDone(WorkerResult { action, saved_path, error, size }));
     });
 }
 

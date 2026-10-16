@@ -14,6 +14,7 @@ const HEADER: &str = r#"# Skrinka configuration. Edit, then use "Reload config" 
 # hotkey_window      active window capture hotkey, e.g. 'Shift+Alt+3'
 # fullscreen_mode    'cursor_monitor' (the monitor under the mouse) or 'all_monitors'
 # window_capture     'visible' (the window as you see it, title bar included) or 'client' (its contents only)
+# notifications      'saves' (after a screenshot is saved to a file), 'all' (also after Ctrl+C) or 'off'
 # last_save_as_dir   folder of the last "Save as" (maintained by the program)
 "#;
 
@@ -39,6 +40,17 @@ pub enum WindowCapture {
     Client,
 }
 
+/// When a tray notification appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Notifications {
+    /// After a screenshot is saved to a file.
+    Saves,
+    /// Also after copying to the clipboard only.
+    All,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -49,6 +61,7 @@ pub struct Config {
     pub hotkey_window: String,
     pub fullscreen_mode: FullscreenMode,
     pub window_capture: WindowCapture,
+    pub notifications: Notifications,
     /// Empty until the first "Save as".
     pub last_save_as_dir: PathBuf,
 }
@@ -66,6 +79,7 @@ impl Default for Config {
             hotkey_window: DEFAULT_HOTKEY_WINDOW.to_owned(),
             fullscreen_mode: FullscreenMode::CursorMonitor,
             window_capture: WindowCapture::Visible,
+            notifications: Notifications::Saves,
             last_save_as_dir: PathBuf::new(),
         }
     }
@@ -130,6 +144,7 @@ mod tests {
             fullscreen_mode: FullscreenMode::AllMonitors,
             window_capture: WindowCapture::Client,
             hotkey_window: "Ctrl+Shift+3".to_owned(),
+            notifications: Notifications::All,
             ..Config::default()
         };
         let text = config.to_toml().unwrap();
@@ -163,6 +178,15 @@ mod tests {
         let config = Config::parse(v1).unwrap();
         assert_eq!(config.hotkey_window, DEFAULT_HOTKEY_WINDOW);
         assert_eq!(config.window_capture, WindowCapture::Visible);
+        assert_eq!(config.notifications, Notifications::Saves);
+    }
+
+    #[test]
+    fn notifications_values() {
+        assert_eq!(Config::parse("notifications = 'off'\n").unwrap().notifications, Notifications::Off);
+        assert_eq!(Config::parse("notifications = 'all'\n").unwrap().notifications, Notifications::All);
+        assert_eq!(Config::parse("notifications = 'saves'\n").unwrap().notifications, Notifications::Saves);
+        assert!(Config::parse("notifications = 'yes'\n").is_err());
     }
 
     #[test]
