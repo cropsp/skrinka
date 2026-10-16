@@ -167,6 +167,11 @@ fn save_png(image: &RgbaImage, file: File, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether chrono accepts the strftime template; formatting an invalid one would panic.
+pub fn is_valid_template(template: &str) -> bool {
+    StrftimeItems::new(template).parse().is_ok()
+}
+
 /// File name from a strftime template, safe for Windows, always ending in `.png`.
 pub fn format_filename(template: &str, now: &DateTime<Local>) -> String {
     // chrono panics while formatting an invalid template, so it is validated first.
@@ -237,6 +242,14 @@ mod tests {
     fn invalid_template_falls_back_to_default() {
         assert_eq!(format_filename("%Q%", &at()), "Screenshot 2026-07-16 09-05-03.png");
         assert_eq!(format_filename("broken %", &at()), "Screenshot 2026-07-16 09-05-03.png");
+    }
+
+    #[test]
+    fn template_validation() {
+        assert!(is_valid_template(DEFAULT_FILENAME_FORMAT));
+        assert!(is_valid_template("plain name"));
+        assert!(!is_valid_template("%Q%"));
+        assert!(!is_valid_template("broken %"));
     }
 
     #[test]

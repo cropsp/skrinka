@@ -5,11 +5,13 @@ use anyhow::Context;
 use log::info;
 use serde::{Deserialize, Serialize};
 
-const HEADER: &str = r#"# Skrinka configuration. Edit, then use "Reload config" in the tray menu.
+const HEADER: &str = r#"# Skrinka configuration. Use "Settings…" in the tray menu to change it. Edits made here apply
+# at the next start, or when Settings is opened and saved.
 #
 # save_dir           folder for auto-saved screenshots
 # filename_format    strftime template, e.g. 'Screenshot %Y-%m-%d %H-%M-%S'; ".png" is added automatically
-# hotkey_region      region capture hotkey, e.g. 'Shift+Alt+2'
+# hotkey_region      region capture hotkey, e.g. 'Shift+Alt+2'; modifiers Ctrl, Shift, Alt, Super (the
+#                    Windows key) plus one key, joined with '+'; '' disables the hotkey
 # hotkey_fullscreen  full-screen capture hotkey, e.g. 'Shift+Alt+1'
 # hotkey_window      active window capture hotkey, e.g. 'Shift+Alt+3'
 # fullscreen_mode    'cursor_monitor' (the monitor under the mouse) or 'all_monitors'
@@ -194,6 +196,13 @@ mod tests {
         assert_eq!(Config::parse("window_capture = 'client'\n").unwrap().window_capture, WindowCapture::Client);
         assert_eq!(Config::parse("window_capture = 'visible'\n").unwrap().window_capture, WindowCapture::Visible);
         assert!(Config::parse("window_capture = 'whole'\n").is_err());
+    }
+
+    #[test]
+    fn empty_hotkey_survives_a_round_trip() {
+        let config = Config { hotkey_window: String::new(), ..Config::default() };
+        let text = config.to_toml().unwrap();
+        assert_eq!(Config::parse(&text).unwrap().hotkey_window, "");
     }
 
     #[test]

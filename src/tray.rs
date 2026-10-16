@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::mem::size_of;
 
 use log::{info, warn};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::core::GUID;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -11,11 +11,8 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
 };
 
-use crate::{icon, version};
-
-const CAPTURE_REGION: &str = "Capture region";
-const CAPTURE_FULLSCREEN: &str = "Capture full screen";
-const CAPTURE_WINDOW: &str = "Capture window";
+use crate::strings::{MENU_CAPTURE_FULLSCREEN, MENU_CAPTURE_REGION, MENU_CAPTURE_WINDOW};
+use crate::{icon, strings, version};
 
 /// The `uID` tray-icon registered Skrinka's icon under; it does not expose it. tray-icon 0.26.1
 /// numbers from a process-wide counter that starts at 1 (`src/counter.rs`):
@@ -35,26 +32,21 @@ pub struct Tray {
     pub capture_fullscreen: MenuItem,
     pub capture_window: MenuItem,
     pub open_folder: MenuItem,
-    pub open_config: MenuItem,
-    pub reload_config: MenuItem,
-    pub autostart: CheckMenuItem,
+    pub settings: MenuItem,
     /// Debug builds only: saves the raw virtual-screen capture.
     pub debug_dump: Option<MenuItem>,
     pub quit: MenuItem,
 }
 
 impl Tray {
-    pub fn new(autostart_enabled: bool) -> anyhow::Result<Tray> {
-        let capture_region = MenuItem::new(CAPTURE_REGION, true, None);
-        let capture_fullscreen = MenuItem::new(CAPTURE_FULLSCREEN, true, None);
-        let capture_window = MenuItem::new(CAPTURE_WINDOW, true, None);
-        let open_folder = MenuItem::new("Open screenshots folder", true, None);
-        let open_config = MenuItem::new("Open config file", true, None);
-        let reload_config = MenuItem::new("Reload config", true, None);
-        let autostart = CheckMenuItem::new("Run on startup", true, autostart_enabled, None);
-        let debug_dump =
-            cfg!(debug_assertions).then(|| MenuItem::new("Debug: dump capture", true, None));
-        let quit = MenuItem::new("Quit", true, None);
+    pub fn new() -> anyhow::Result<Tray> {
+        let capture_region = MenuItem::new(MENU_CAPTURE_REGION, true, None);
+        let capture_fullscreen = MenuItem::new(MENU_CAPTURE_FULLSCREEN, true, None);
+        let capture_window = MenuItem::new(MENU_CAPTURE_WINDOW, true, None);
+        let open_folder = MenuItem::new(strings::MENU_OPEN_FOLDER, true, None);
+        let settings = MenuItem::new(strings::MENU_SETTINGS, true, None);
+        let debug_dump = cfg!(debug_assertions).then(|| MenuItem::new(strings::MENU_DEBUG_DUMP, true, None));
+        let quit = MenuItem::new(strings::MENU_QUIT, true, None);
 
         let menu = Menu::new();
         menu.append_items(&[
@@ -63,10 +55,7 @@ impl Tray {
             &capture_window,
             &PredefinedMenuItem::separator(),
             &open_folder,
-            &open_config,
-            &reload_config,
-            &PredefinedMenuItem::separator(),
-            &autostart,
+            &settings,
             &PredefinedMenuItem::separator(),
         ])?;
         if let Some(item) = &debug_dump {
@@ -87,9 +76,7 @@ impl Tray {
             capture_fullscreen,
             capture_window,
             open_folder,
-            open_config,
-            reload_config,
-            autostart,
+            settings,
             debug_dump,
             quit,
         };
@@ -155,9 +142,9 @@ impl Tray {
     /// Shows the hotkeys next to the capture items. A tab right-aligns the text the way
     /// Windows menus show shortcuts; it is only a label, not a menu accelerator.
     pub fn set_hotkey_labels(&self, region: &str, fullscreen: &str, window: &str) {
-        self.capture_region.set_text(format!("{CAPTURE_REGION}\t{region}"));
-        self.capture_fullscreen.set_text(format!("{CAPTURE_FULLSCREEN}\t{fullscreen}"));
-        self.capture_window.set_text(format!("{CAPTURE_WINDOW}\t{window}"));
+        self.capture_region.set_text(format!("{MENU_CAPTURE_REGION}\t{region}"));
+        self.capture_fullscreen.set_text(format!("{MENU_CAPTURE_FULLSCREEN}\t{fullscreen}"));
+        self.capture_window.set_text(format!("{MENU_CAPTURE_WINDOW}\t{window}"));
     }
 }
 

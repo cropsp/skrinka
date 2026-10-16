@@ -6,6 +6,8 @@ use log::{error, info};
 
 use crate::app::{send_event, SharedProxy, UserEvent};
 use crate::config::{Config, DEFAULT_HOTKEY_FULLSCREEN, DEFAULT_HOTKEY_REGION, DEFAULT_HOTKEY_WINDOW};
+use crate::settings::hotkey_text;
+use crate::strings;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Ids {
@@ -18,8 +20,8 @@ pub struct Hotkeys {
     /// Dropping the manager unregisters the hotkeys, so it lives as long as `App`.
     manager: GlobalHotKeyManager,
     registered: Vec<HotKey>,
-    /// global-hotkey keeps only the first event handler it is given, so re-registering after
-    /// "Reload config" changes these shared ids instead of the handler.
+    /// global-hotkey keeps only the first event handler it is given, so re-registering (around
+    /// the Settings window) changes these shared ids instead of the handler.
     ids: Arc<Mutex<Ids>>,
     /// For the tray menu: the hotkey in effect, or why there is none.
     pub region_label: String,
@@ -62,12 +64,7 @@ impl Hotkeys {
     /// Registers the hotkeys from the config, replacing the previous ones. Returns a message
     /// for the user if a hotkey could not be registered.
     pub fn register(&mut self, config: &Config) -> Option<String> {
-        if !self.registered.is_empty() {
-            if let Err(e) = self.manager.unregister_all(&self.registered) {
-                error!("cannot unregister the old hotkeys: {e}");
-            }
-            self.registered.clear();
-        }
+        self.unregister_all();
         let mut problems = Vec::new();
         let (region, region_label) =
             self.register_one("hotkey_region", &config.hotkey_region, DEFAULT_HOTKEY_REGION, &mut problems);
@@ -86,7 +83,21 @@ impl Hotkeys {
         (!problems.is_empty()).then(|| problems.join("\n\n"))
     }
 
-    /// Returns the id if registered, and the label for the tray menu.
+    /// Unregisters every hotkey, so the keys reach other programs (and the Settings window,
+    /// which records them). The menu labels stay as they are.
+    pub fn unregister_all(&mut self) {
+        if !self.registered.is_empty() {
+            match self.manager.unregister_all(&self.registered) {
+                Ok(()) => info!("hotkeys unregistered"),
+                Err(e) => error!("cannot unregister the hotkeys: {e}"),
+            }
+            self.registered.clear();
+        }
+        *self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Ids::default();
+    }
+
+    /// Returns the id if registered, and the label for the tray menu. An empty `text` means
+    /// the hotkey is disabled.
     fn register_one(
         &mut self,
         key: &str,
@@ -94,6 +105,11 @@ impl Hotkeys {
         default: &str,
         problems: &mut Vec<String>,
     ) -> (Option<u32>, String) {
+        let text = text.trim();
+        if text.is_empty() {
+            info!("{key} disabled");
+            return (None, strings::HOTKEY_DISABLED.to_owned());
+        }
         let (hotkey, text) = match text.parse::<HotKey>() {
             Ok(hotkey) => (hotkey, text),
             Err(e) => {
@@ -101,19 +117,17 @@ impl Hotkeys {
                 (default.parse().expect("the default hotkeys are valid"), default)
             }
         };
+        let shown = hotkey_text::display(text);
         match self.manager.register(hotkey) {
             Ok(()) => {
                 info!("registered {key} = {text}");
                 self.registered.push(hotkey);
-                (Some(hotkey.id()), text.to_owned())
+                (Some(hotkey.id()), shown)
             }
             Err(e) => {
                 error!("cannot register {key} = {text}: {e}");
-                problems.push(format!(
-                    "Could not register hotkey {text} — it is probably used by another program. \
-                     Change it in config.toml."
-                ));
-                (None, format!("{text} (not available)"))
+                problems.push(strings::hotkey_register_failed(&shown));
+                (None, strings::hotkey_not_available(&shown))
             }
         }
     }

@@ -13,9 +13,18 @@ All notable changes to Skrinka are listed here. The format follows
 - Build number, commit and build date in the binary: the log starts with
   `Skrinka 0.3.0 (Build N · abc1234 · YYYY-MM-DD) starting`; the tray tooltip shows the version.
 - `skrinka.exe` has an icon and version information (Explorer → Properties → Details).
+- Settings window ("Settings…" in the tray menu): hotkeys (click Change and press the keys;
+  Backspace disables a hotkey), screenshot folder, file name template, full-screen and window
+  capture modes, notifications and "Run on startup", with the version and build number at the
+  top. It opens on the monitor under the mouse and checks the values before saving; saved
+  settings apply at once. The global hotkeys are paused while it is open.
+- An empty hotkey in `config.toml` disables that hotkey.
 
 ### Changed
 
+- The tray menu is shorter: "Open config file", "Reload config" and "Run on startup" are in the
+  Settings window now. `config.toml` can still be edited by hand; edits apply at the next start
+  or when Settings is opened and saved.
 - The design specs moved to `docs/design/`.
 
 ## [0.2.0] - 2026-10-16

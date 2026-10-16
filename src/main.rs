@@ -9,6 +9,8 @@ mod hotkeys;
 mod icon;
 mod output;
 mod overlay;
+mod settings;
+mod strings;
 mod text;
 mod tray;
 mod util;

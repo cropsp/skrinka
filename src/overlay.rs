@@ -18,13 +18,13 @@ use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
 use crate::capture::{self, Capture};
 use crate::output::Action;
+use crate::strings;
 use crate::text::Text;
 use crate::util::{self, Rect};
 
 const BORDER_COLOR: u32 = 0x00E3_4133; // ScreenCloud red (227, 65, 51)
 const BORDER_WIDTH: i32 = 2;
-const HELP: &str = "Drag to select  ·  Drag inside to move, edges to resize  ·  Arrows: nudge  ·  \
-                    Enter: copy + save  ·  Ctrl+S: save as  ·  Ctrl+C: copy  ·  Esc: cancel";
+const HELP: &str = strings::OVERLAY_HELP;
 const HELP_TOP: i32 = 40;
 /// Gap between the size label and the selection below it.
 const LABEL_GAP: i32 = 4;

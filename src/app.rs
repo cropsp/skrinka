@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicIsize;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +23,8 @@ use crate::dialog;
 use crate::hotkeys::Hotkeys;
 use crate::output::{self, Action, WorkerResult};
 use crate::overlay::{OverlaySession, Outcome};
+use crate::settings::{self, DialogSlot};
+use crate::strings;
 use crate::text::Text;
 use crate::tray::Tray;
 use crate::util::{self, Rect};
@@ -41,6 +44,10 @@ pub enum UserEvent {
     /// A capture chosen from the tray menu, sent once the menu has disappeared.
     DelayedCapture(CaptureKind),
     WorkerDone(WorkerResult),
+    /// The Settings window closed with Save (and passed its checks).
+    SettingsSaved(settings::Saved),
+    /// The Settings window closed with Cancel, Esc or its close button.
+    SettingsClosed,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,9 +63,7 @@ const MENU_CLOSE_DELAY: Duration = Duration::from_millis(300);
 enum TrayAction {
     Capture(CaptureKind),
     OpenFolder,
-    OpenConfig,
-    ReloadConfig,
-    ToggleAutostart,
+    Settings,
     DebugDump,
     Quit,
 }
@@ -79,6 +84,11 @@ pub struct App {
     overlay: Option<OverlaySession>,
     /// A "Save as" dialog is open; a new overlay (always on top) would hide it.
     save_as_open: bool,
+    /// The Settings window is open (or being created). The hotkeys are unregistered meanwhile,
+    /// so they reach its hotkey fields, and captures from the menu are ignored: the overlay
+    /// would cover the window.
+    settings_open: bool,
+    settings_window: DialogSlot,
     fatal_error: Option<String>,
 }
 
@@ -93,6 +103,8 @@ impl App {
             hotkeys: None,
             overlay: None,
             save_as_open: false,
+            settings_open: false,
+            settings_window: Arc::new(AtomicIsize::new(0)),
             fatal_error: None,
         }
     }
@@ -103,7 +115,7 @@ impl App {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) {
-        match Tray::new(autostart::is_enabled()) {
+        match Tray::new() {
             Ok(tray) => self.tray = Some(tray),
             Err(e) => {
                 error!("cannot create the tray icon: {e:#}");
@@ -161,12 +173,8 @@ impl App {
             TrayAction::Capture(CaptureKind::Window)
         } else if id == *tray.open_folder.id() {
             TrayAction::OpenFolder
-        } else if id == *tray.open_config.id() {
-            TrayAction::OpenConfig
-        } else if id == *tray.reload_config.id() {
-            TrayAction::ReloadConfig
-        } else if id == *tray.autostart.id() {
-            TrayAction::ToggleAutostart
+        } else if id == *tray.settings.id() {
+            TrayAction::Settings
         } else if tray.debug_dump.as_ref().is_some_and(|item| id == *item.id()) {
             TrayAction::DebugDump
         } else if id == *tray.quit.id() {
@@ -176,6 +184,9 @@ impl App {
         };
         match action {
             TrayAction::Capture(kind) => {
+                if self.settings_blocks_capture() {
+                    return;
+                }
                 let proxy = self.proxy.clone();
                 thread::spawn(move || {
                     thread::sleep(MENU_CLOSE_DELAY);
@@ -183,15 +194,24 @@ impl App {
                 });
             }
             TrayAction::OpenFolder => self.open_folder(),
-            TrayAction::OpenConfig => self.open_config(),
-            TrayAction::ReloadConfig => self.reload_config(),
-            TrayAction::ToggleAutostart => self.toggle_autostart(),
+            TrayAction::Settings => self.open_settings(),
             TrayAction::DebugDump => self.debug_dump_capture(),
             TrayAction::Quit => {
                 info!("quit from the tray menu");
+                if self.settings_open {
+                    settings::close(&self.settings_window);
+                }
                 event_loop.exit();
             }
         }
+    }
+
+    /// Captures wait until the Settings window is closed.
+    fn settings_blocks_capture(&self) -> bool {
+        if self.settings_open {
+            info!("capture ignored: the Settings window is open");
+        }
+        self.settings_open
     }
 
     fn open_folder(&self) {
@@ -204,46 +224,82 @@ impl App {
         spawn_program(Command::new("explorer.exe").arg(dir));
     }
 
-    fn open_config(&self) {
-        // Recreated if it was deleted, so notepad does not offer to create an empty file.
-        if !self.config_path.exists() {
-            if let Err(e) = self.config.save(&self.config_path) {
-                error!("{e:#}");
+    /// Opens the Settings window, or brings it to the front if it is already open.
+    fn open_settings(&mut self) {
+        if self.settings_open {
+            if settings::bring_to_front(&self.settings_window) {
+                info!("settings window brought to the front");
             }
+            return;
         }
-        spawn_program(Command::new("notepad.exe").arg(&self.config_path));
+        // From the file, so edits made by hand are shown and applied by Save.
+        let config = match Config::load(&self.config_path) {
+            Ok(config) => config,
+            Err(e) => {
+                warn!("Settings shows the settings in use: {e:#}");
+                self.config.clone()
+            }
+        };
+        if config != self.config {
+            info!("config.toml has changes that are not in use yet; Settings shows them");
+        }
+        if let Some(hotkeys) = &mut self.hotkeys {
+            hotkeys.unregister_all();
+        }
+        self.settings_open = true;
+        info!("opening the Settings window");
+        settings::open(config, autostart::is_enabled(), self.proxy.clone(), self.settings_window.clone());
     }
 
-    fn reload_config(&mut self) {
-        match Config::load(&self.config_path) {
-            Ok(config) => {
-                info!("config reloaded");
-                self.config = config;
-                self.register_hotkeys();
+    fn on_settings_saved(&mut self, saved: settings::Saved) {
+        self.settings_open = false;
+        let mut changed = false;
+        let mut failed = false;
+        if saved.config != self.config {
+            changed = true;
+            match saved.config.save(&self.config_path) {
+                Ok(()) => info!("settings saved to {}", self.config_path.display()),
+                Err(e) => {
+                    failed = true;
+                    error!("{e:#}");
+                    dialog::error_async(format!("{e:#}\n\nThe new settings are in use until Skrinka exits."));
+                }
             }
-            Err(e) => {
-                error!("reload failed, keeping the previous config: {e:#}");
-                dialog::error_async(format!("{e:#}\n\nThe previous settings stay in use."));
+            self.config = saved.config;
+        }
+        if saved.autostart != autostart::is_enabled() {
+            changed = true;
+            match autostart::set_enabled(saved.autostart) {
+                Ok(()) => info!("run on startup: {}", saved.autostart),
+                Err(e) => {
+                    failed = true;
+                    error!("{e:#}");
+                    dialog::error_async(format!("Could not change \"Run on startup\": {e:#}"));
+                }
             }
         }
+        self.register_hotkeys();
+        if !changed {
+            info!("settings saved without changes");
+        } else if !failed {
+            info!("settings applied");
+            // Not subject to `notifications`: it confirms an action the user just took.
+            if let Some(tray) = &self.tray {
+                tray.notify(strings::APP_NAME, strings::NOTIFY_SETTINGS_SAVED);
+            }
+        }
+        release_freed_memory();
     }
 
-    fn toggle_autostart(&self) {
-        let Some(tray) = &self.tray else { return };
-        // muda has already flipped the check mark.
-        let enabled = tray.autostart.is_checked();
-        match autostart::set_enabled(enabled) {
-            Ok(()) => info!("run on startup: {enabled}"),
-            Err(e) => {
-                tray.autostart.set_checked(!enabled);
-                error!("{e:#}");
-                dialog::error_async(format!("Could not change \"Run on startup\": {e:#}"));
-            }
-        }
+    fn on_settings_closed(&mut self) {
+        self.settings_open = false;
+        info!("settings window closed without saving");
+        self.register_hotkeys();
+        release_freed_memory();
     }
 
     fn capture_region(&mut self, event_loop: &ActiveEventLoop) {
-        if self.overlay.is_some() {
+        if self.overlay.is_some() || self.settings_blocks_capture() {
             return;
         }
         if self.save_as_open {
@@ -286,7 +342,7 @@ impl App {
     }
 
     fn capture_fullscreen(&mut self, event_loop: &ActiveEventLoop) {
-        if self.overlay.is_some() {
+        if self.overlay.is_some() || self.settings_blocks_capture() {
             return;
         }
         let Some(capture) = capture_or_report() else { return };
@@ -306,7 +362,7 @@ impl App {
     /// the hotkey always produces a screenshot. Screen-based: whatever overlaps the window is
     /// in the picture.
     fn capture_window(&mut self, event_loop: &ActiveEventLoop, from_menu: bool) {
-        if self.overlay.is_some() {
+        if self.overlay.is_some() || self.settings_blocks_capture() {
             return;
         }
         let Some(capture) = capture_or_report() else { return };
@@ -361,11 +417,11 @@ impl App {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let folder = path.parent().map(Path::display);
                 let folder = folder.map(|f| f.to_string()).unwrap_or_default();
-                tray.notify("Screenshot saved", &format!("{name}\n{folder}"));
+                tray.notify(strings::NOTIFY_SAVED, &format!("{name}\n{folder}"));
             }
             (Notifications::All, None, Action::ClipboardOnly) => {
                 let (w, h) = result.size;
-                tray.notify("Copied to clipboard", &format!("{w} × {h}"));
+                tray.notify(strings::NOTIFY_COPIED, &format!("{w} × {h}"));
             }
             // "Save as" cancelled, or clipboard only with `saves`.
             _ => {}
@@ -527,6 +583,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::DelayedCapture(CaptureKind::Fullscreen) => self.capture_fullscreen(event_loop),
             UserEvent::DelayedCapture(CaptureKind::Window) => self.capture_window(event_loop, true),
             UserEvent::WorkerDone(result) => self.on_worker_done(result),
+            UserEvent::SettingsSaved(saved) => self.on_settings_saved(saved),
+            UserEvent::SettingsClosed => self.on_settings_closed(),
         }
     }
 
