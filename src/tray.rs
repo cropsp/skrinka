@@ -1,20 +1,47 @@
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+
+const CAPTURE_REGION: &str = "Capture region";
+const CAPTURE_FULLSCREEN: &str = "Capture full screen";
 
 pub struct Tray {
     /// Dropping the `TrayIcon` removes the icon, so it lives as long as `App`.
     _icon: TrayIcon,
+    pub capture_region: MenuItem,
+    pub capture_fullscreen: MenuItem,
+    pub open_folder: MenuItem,
+    pub open_config: MenuItem,
+    pub reload_config: MenuItem,
+    pub autostart: CheckMenuItem,
     pub debug_dump: MenuItem,
     pub quit: MenuItem,
 }
 
 impl Tray {
-    pub fn new() -> anyhow::Result<Tray> {
+    pub fn new(autostart_enabled: bool) -> anyhow::Result<Tray> {
+        let capture_region = MenuItem::new(CAPTURE_REGION, true, None);
+        let capture_fullscreen = MenuItem::new(CAPTURE_FULLSCREEN, true, None);
+        let open_folder = MenuItem::new("Open screenshots folder", true, None);
+        let open_config = MenuItem::new("Open config file", true, None);
+        let reload_config = MenuItem::new("Reload config", true, None);
+        let autostart = CheckMenuItem::new("Run on startup", true, autostart_enabled, None);
         let debug_dump = MenuItem::new("Debug: dump capture", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
-        menu.append_items(&[&debug_dump, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[
+            &capture_region,
+            &capture_fullscreen,
+            &PredefinedMenuItem::separator(),
+            &open_folder,
+            &open_config,
+            &reload_config,
+            &PredefinedMenuItem::separator(),
+            &autostart,
+            &PredefinedMenuItem::separator(),
+            &debug_dump,
+            &quit,
+        ])?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -22,7 +49,24 @@ impl Tray {
             .with_icon(Icon::from_rgba(icon_rgba(), ICON_SIZE as u32, ICON_SIZE as u32)?)
             .build()?;
 
-        Ok(Tray { _icon: icon, debug_dump, quit })
+        Ok(Tray {
+            _icon: icon,
+            capture_region,
+            capture_fullscreen,
+            open_folder,
+            open_config,
+            reload_config,
+            autostart,
+            debug_dump,
+            quit,
+        })
+    }
+
+    /// Shows the hotkeys next to the capture items. A tab right-aligns the text the way
+    /// Windows menus show shortcuts; it is only a label, not a menu accelerator.
+    pub fn set_hotkey_labels(&self, region: &str, fullscreen: &str) {
+        self.capture_region.set_text(format!("{CAPTURE_REGION}\t{region}"));
+        self.capture_fullscreen.set_text(format!("{CAPTURE_FULLSCREEN}\t{fullscreen}"));
     }
 }
 

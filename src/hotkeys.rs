@@ -20,6 +20,9 @@ pub struct Hotkeys {
     /// global-hotkey keeps only the first event handler it is given, so re-registering after
     /// "Reload config" changes these shared ids instead of the handler.
     ids: Arc<Mutex<Ids>>,
+    /// For the tray menu: the hotkey in effect, or why there is none.
+    pub region_label: String,
+    pub fullscreen_label: String,
 }
 
 impl Hotkeys {
@@ -42,7 +45,13 @@ impl Hotkeys {
             };
             send_event(&proxy, event);
         }));
-        Ok(Hotkeys { manager, registered: Vec::new(), ids })
+        Ok(Hotkeys {
+            manager,
+            registered: Vec::new(),
+            ids,
+            region_label: String::new(),
+            fullscreen_label: String::new(),
+        })
     }
 
     /// Registers both hotkeys from the config, replacing the previous ones. Returns a message
@@ -55,25 +64,28 @@ impl Hotkeys {
             self.registered.clear();
         }
         let mut problems = Vec::new();
-        let region =
+        let (region, region_label) =
             self.register_one("hotkey_region", &config.hotkey_region, DEFAULT_HOTKEY_REGION, &mut problems);
-        let fullscreen = self.register_one(
+        let (fullscreen, fullscreen_label) = self.register_one(
             "hotkey_fullscreen",
             &config.hotkey_fullscreen,
             DEFAULT_HOTKEY_FULLSCREEN,
             &mut problems,
         );
         *self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Ids { region, fullscreen };
+        self.region_label = region_label;
+        self.fullscreen_label = fullscreen_label;
         (!problems.is_empty()).then(|| problems.join("\n\n"))
     }
 
+    /// Returns the id if registered, and the label for the tray menu.
     fn register_one(
         &mut self,
         key: &str,
         text: &str,
         default: &str,
         problems: &mut Vec<String>,
-    ) -> Option<u32> {
+    ) -> (Option<u32>, String) {
         let (hotkey, text) = match text.parse::<HotKey>() {
             Ok(hotkey) => (hotkey, text),
             Err(e) => {
@@ -85,7 +97,7 @@ impl Hotkeys {
             Ok(()) => {
                 info!("registered {key} = {text}");
                 self.registered.push(hotkey);
-                Some(hotkey.id())
+                (Some(hotkey.id()), text.to_owned())
             }
             Err(e) => {
                 error!("cannot register {key} = {text}: {e}");
@@ -93,7 +105,7 @@ impl Hotkeys {
                     "Could not register hotkey {text} — it is probably used by another program. \
                      Change it in config.toml."
                 ));
-                None
+                (None, format!("{text} (not available)"))
             }
         }
     }

@@ -1,18 +1,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use log::{error, info, warn};
 use tray_icon::menu::{MenuEvent, MenuId};
+use tray_icon::TrayIconEvent;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::monitor::MonitorHandle;
 use winit::window::WindowId;
 
+use crate::autostart;
 use crate::capture::{self, Capture};
 use crate::config::{Config, FullscreenMode};
 use crate::dialog;
@@ -32,7 +35,29 @@ pub enum UserEvent {
     HotkeyRegion,
     HotkeyFullscreen,
     TrayMenu(MenuId),
+    TrayDoubleClick,
+    /// A capture chosen from the tray menu, sent once the menu has disappeared.
+    DelayedCapture(CaptureKind),
     WorkerDone(WorkerResult),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CaptureKind {
+    Region,
+    Fullscreen,
+}
+
+/// Time for the tray menu to vanish before the screen is captured.
+const MENU_CLOSE_DELAY: Duration = Duration::from_millis(300);
+
+enum TrayAction {
+    Capture(CaptureKind),
+    OpenFolder,
+    OpenConfig,
+    ReloadConfig,
+    ToggleAutostart,
+    DebugDump,
+    Quit,
 }
 
 pub fn send_event(proxy: &SharedProxy, event: UserEvent) {
@@ -75,7 +100,7 @@ impl App {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) {
-        match Tray::new() {
+        match Tray::new(autostart::is_enabled()) {
             Ok(tray) => self.tray = Some(tray),
             Err(e) => {
                 error!("cannot create the tray icon: {e:#}");
@@ -85,18 +110,22 @@ impl App {
             }
         }
 
-        // muda keeps only the first handler it is given, so this runs exactly once.
+        // muda and tray-icon keep only the first handler they are given; this runs once.
         let proxy = self.proxy.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             send_event(&proxy, UserEvent::TrayMenu(e.id));
         }));
+        let proxy = self.proxy.clone();
+        TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+            if let TrayIconEvent::DoubleClick { .. } = e {
+                send_event(&proxy, UserEvent::TrayDoubleClick);
+            }
+        }));
 
         match Hotkeys::new(self.proxy.clone()) {
-            Ok(mut hotkeys) => {
-                if let Some(problems) = hotkeys.register(&self.config) {
-                    dialog::warning_async(problems);
-                }
+            Ok(hotkeys) => {
                 self.hotkeys = Some(hotkeys);
+                self.register_hotkeys();
             }
             Err(e) => {
                 error!("cannot set up global hotkeys: {e:#}");
@@ -108,13 +137,103 @@ impl App {
         info!("ready; screenshots go to {}", self.config.save_dir.display());
     }
 
+    /// (Re)registers the hotkeys from the current config and shows them in the menu.
+    fn register_hotkeys(&mut self) {
+        let Some(hotkeys) = &mut self.hotkeys else { return };
+        if let Some(problems) = hotkeys.register(&self.config) {
+            dialog::warning_async(problems);
+        }
+        if let Some(tray) = &self.tray {
+            tray.set_hotkey_labels(&hotkeys.region_label, &hotkeys.fullscreen_label);
+        }
+    }
+
     fn on_menu(&mut self, event_loop: &ActiveEventLoop, id: MenuId) {
         let Some(tray) = &self.tray else { return };
-        if id == *tray.debug_dump.id() {
-            self.debug_dump_capture();
+        let action = if id == *tray.capture_region.id() {
+            TrayAction::Capture(CaptureKind::Region)
+        } else if id == *tray.capture_fullscreen.id() {
+            TrayAction::Capture(CaptureKind::Fullscreen)
+        } else if id == *tray.open_folder.id() {
+            TrayAction::OpenFolder
+        } else if id == *tray.open_config.id() {
+            TrayAction::OpenConfig
+        } else if id == *tray.reload_config.id() {
+            TrayAction::ReloadConfig
+        } else if id == *tray.autostart.id() {
+            TrayAction::ToggleAutostart
+        } else if id == *tray.debug_dump.id() {
+            TrayAction::DebugDump
         } else if id == *tray.quit.id() {
-            info!("quit from the tray menu");
-            event_loop.exit();
+            TrayAction::Quit
+        } else {
+            return;
+        };
+        match action {
+            TrayAction::Capture(kind) => {
+                let proxy = self.proxy.clone();
+                thread::spawn(move || {
+                    thread::sleep(MENU_CLOSE_DELAY);
+                    send_event(&proxy, UserEvent::DelayedCapture(kind));
+                });
+            }
+            TrayAction::OpenFolder => self.open_folder(),
+            TrayAction::OpenConfig => self.open_config(),
+            TrayAction::ReloadConfig => self.reload_config(),
+            TrayAction::ToggleAutostart => self.toggle_autostart(),
+            TrayAction::DebugDump => self.debug_dump_capture(),
+            TrayAction::Quit => {
+                info!("quit from the tray menu");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn open_folder(&self) {
+        let dir = &self.config.save_dir;
+        if let Err(e) = fs::create_dir_all(dir) {
+            error!("cannot create {}: {e}", dir.display());
+            dialog::error_async(format!("Could not create {}: {e}", dir.display()));
+            return;
+        }
+        spawn_program(Command::new("explorer.exe").arg(dir));
+    }
+
+    fn open_config(&self) {
+        // Recreated if it was deleted, so notepad does not offer to create an empty file.
+        if !self.config_path.exists() {
+            if let Err(e) = self.config.save(&self.config_path) {
+                error!("{e:#}");
+            }
+        }
+        spawn_program(Command::new("notepad.exe").arg(&self.config_path));
+    }
+
+    fn reload_config(&mut self) {
+        match Config::load(&self.config_path) {
+            Ok(config) => {
+                info!("config reloaded");
+                self.config = config;
+                self.register_hotkeys();
+            }
+            Err(e) => {
+                error!("reload failed, keeping the previous config: {e:#}");
+                dialog::error_async(format!("{e:#}\n\nThe previous settings stay in use."));
+            }
+        }
+    }
+
+    fn toggle_autostart(&self) {
+        let Some(tray) = &self.tray else { return };
+        // muda has already flipped the check mark.
+        let enabled = tray.autostart.is_checked();
+        match autostart::set_enabled(enabled) {
+            Ok(()) => info!("run on startup: {enabled}"),
+            Err(e) => {
+                tray.autostart.set_checked(!enabled);
+                error!("{e:#}");
+                dialog::error_async(format!("Could not change \"Run on startup\": {e:#}"));
+            }
         }
     }
 
@@ -244,6 +363,14 @@ impl App {
     }
 }
 
+fn spawn_program(command: &mut Command) {
+    if let Err(e) = command.spawn() {
+        let program = command.get_program().to_string_lossy().into_owned();
+        error!("cannot start {program}: {e}");
+        dialog::error_async(format!("Could not start {program}: {e}"));
+    }
+}
+
 fn capture_or_report() -> Option<Capture> {
     capture::capture_virtual_screen()
         .map_err(|e| {
@@ -297,6 +424,9 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::HotkeyRegion => self.capture_region(event_loop),
             UserEvent::HotkeyFullscreen => self.capture_fullscreen(event_loop),
             UserEvent::TrayMenu(id) => self.on_menu(event_loop, id),
+            UserEvent::TrayDoubleClick => self.open_folder(),
+            UserEvent::DelayedCapture(CaptureKind::Region) => self.capture_region(event_loop),
+            UserEvent::DelayedCapture(CaptureKind::Fullscreen) => self.capture_fullscreen(event_loop),
             UserEvent::WorkerDone(result) => self.on_worker_done(result),
         }
     }
