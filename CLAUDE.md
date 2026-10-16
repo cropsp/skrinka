@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Skrinka is a Windows-only (10/11, x86_64, MSVC) tray screenshot tool in Rust that replaces ScreenCloud. `TASK.md` is the full spec: scope, pinned crate versions, behaviour, DPI rules, pitfalls and acceptance tests. Read it before changing behaviour. Its "out of scope" list (selection handles, window capture, editor, uploads, toasts, JPG, settings GUI, CLI args) applies; **never add auto-update or anything that downloads**. `README.md` holds the user docs and the manual test checklist.
+Skrinka is a Windows-only (10/11, x86_64, MSVC) tray screenshot tool in Rust that replaces ScreenCloud. `TASK.md` is the v1 spec (scope, pinned crate versions, behaviour, DPI rules, pitfalls, acceptance tests) and `TASK-v2.md` the v2 spec, which adds selection handles, active-window capture and notifications after a save. Read both before changing behaviour. Still out of scope: an editor (arrows, text, blur), uploads, JPG, a settings GUI, CLI args, a selection spanning two monitors, click-to-open on notifications; **never add auto-update or anything that downloads**. `README.md` holds the user docs and the manual test checklist.
 
 ## Commands
 
@@ -55,8 +55,15 @@ cargo clippy --release --all-targets -- -D warnings    # must stay clean, includ
   - So windows are created hidden, the exact physical position and size are applied again after creation, and `ScaleFactorChanged` writes the monitor size back through `inner_size_writer`.
   - Stale `Resized` events from creation arrive late. Judge the size by `inner_size()`, not by the event.
 - **Focus:** don't call winit's `focus_window()`. It injects an Alt press, which together with the held Shift of Shift+Alt+2 can switch the keyboard layout. Instead, the window under the cursor is created `with_active(true)` and shown last.
-- **Keys:** compare `physical_key` (`KeyCode::KeyC`, …), never `logical_key`. The user switches between English and Ukrainian layouts.
+- **Keys:** compare `physical_key` (`KeyCode::KeyC`, …), never `logical_key`. The user switches between English and Ukrainian layouts. Arrow keys act on repeats; Enter/C/S/Esc ignore them.
+- **Selection model:** a left press is hit-tested against the selection on the same window (`hit_test`, `HANDLE_HIT` = 8 px around the edges; corners beat edges, left beats right, top beats bottom). `press_kind` turns the hit into `DragKind::Draw` (outside: clears the selection), `Move { grab }` (inside) or `Resize { fixed, moving, .. }` (edge/corner; `fixed` is the opposite corner and never changes, so crossing it flips the rect). `Drag::rect` is the live rect; on release it becomes the selection, except a `Draw` click without movement, which leaves none. These and `nudge` are pure and unit-tested. The cursor (`update_cursor`) follows the hit only while no drag is in progress.
 - **Finishing:** on finish, `App` drops the overlay *before* spawning the output worker, so a dialog never opens underneath it. While a Save-as dialog is open (`save_as_open`), the region hotkey is ignored.
+
+**Window capture (`window.rs`, `App::capture_window`):**
+- The screen is captured first, then the foreground window's rect is read: DWM `EXTENDED_FRAME_BOUNDS` for `visible` (no invisible resize borders), `GetClientRect` + `ClientToScreen` for `client`. Physical pixels, like everything else.
+- A maximized window's frame sticks out of its monitor by the border width, so `target_rect` cuts it to the monitor under its centre before converting to capture coordinates.
+- Minimized, Skrinka's own, shell windows (`Progman`, `WorkerW`, `Shell_TrayWnd`, `Shell_SecondaryTrayWnd`) or an off-screen rect → a logged warning and the cursor-monitor capture instead.
+- From the tray menu the foreground window is tray-icon's hidden `tray_icon_app` window (it calls `SetForegroundWindow` before `TrackPopupMenu`, and Windows does not give the focus back), so `from_menu` walks the Z order for the topmost visible, uncloaked, activatable window of another process.
 
 **Text (`text.rs`):**
 - fontdue parses every glyph of Segoe UI (≈20 MB, ≈60 ms).
@@ -75,13 +82,17 @@ cargo clippy --release --all-targets -- -D warnings    # must stay clean, includ
 - The icon is generated in code.
 - Hotkey text is a `\t`-separated part of the label, not a muda accelerator.
 - muda toggles `CheckMenuItem` itself before the event arrives. The autostart handler reads the new state and reverts it if the registry write fails (`autostart.rs`, `HKCU\…\Run\Skrinka`).
+- **Notifications:** `Tray::notify` sends `Shell_NotifyIconW(NIM_MODIFY)` with `NIF_INFO` to tray-icon's icon (`hWnd` = `TrayIcon::window_handle()`), which Windows shows as a toast. Main thread only; called from `App::notify_done` after a worker without errors.
+- **Tray uID = 2:** tray-icon does not expose the icon's `uID`. In 0.26.1 it comes from a process-wide counter starting at 1, and `TrayIconBuilder::new()` draws 1 for the `TrayIconId`, so the icon gets 2 (`TRAY_ICON_UID`). `Tray::verify_icon_id` checks it at startup with `Shell_NotifyIconGetRect` against `TrayIcon::rect()` and logs `tray icon id verified`. If it fails, `notifications_ok` stays false for the session. An icon hidden in the overflow flyout answers `S_FALSE` (no position); windows-rs treats that as `Ok`, tray-icon's `rect()` as `None`, and that pair also counts as verified. Re-check the uID when bumping tray-icon.
 
 ## Verifying behaviour
 
-Unit tests cover the pure logic: template, unique names, crop math, rects, config round-trip, pixel conversion, labels.
+Unit tests cover the pure logic: template, unique names, crop math, rects, config round-trip, pixel conversion, labels, hit test, drag/resize/move/nudge math, handles, window target rects, UTF-16 truncation.
 
 End-to-end behaviour can be checked without a person:
-- Inject Shift+Alt+1/2, mouse drags and keys with `SendInput`/`keybd_event`. `RegisterHotKey` responds to injected input.
-- Send real scancodes (`MapVirtualKey`) so winit computes `physical_key` correctly.
-- Confirm results with the log lines, the new PNGs in `save_dir`, and a pixel comparison of a region PNG against a full-screen PNG at the logged rect.
-- Always check that an overlay or dialog is the foreground window before injecting keys.
+- Inject Shift+Alt+1/2/3, mouse drags and keys with `SendInput`/`keybd_event`. `RegisterHotKey` responds to injected input.
+- Send real scancodes (`MapVirtualKey`) so winit computes `physical_key` correctly; arrow keys need `KEYEVENTF_EXTENDEDKEY`, or winit sees numpad keys.
+- Confirm results with the log lines, the new PNGs in `save_dir`, and a pixel comparison of a region PNG against a full-screen PNG at the logged rect (`fullscreen_mode = 'all_monitors'` makes capture and PNG coordinates the same). A window capture of Notepad differs only by its blinking caret.
+- Always check that an overlay or dialog is the foreground window before injecting keys. Windows' foreground lock can keep a fresh overlay from getting the focus; the first mouse press on it fixes that.
+- Cursor shapes: compare `GetCursorInfo().hCursor` with `LoadCursor(NULL, IDC_SIZEALL/IDC_SIZEWE/…)`.
+- The tray menu: find the icon with `Shell_NotifyIconGetRect(tray_icon_app window, uID 2)`. If the icon is in the overflow flyout, click the taskbar's chevron first. Navigate the menu with Down/Enter.
