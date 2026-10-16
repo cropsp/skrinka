@@ -6,6 +6,8 @@ All notable changes to Skrinka are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
 ### Added
 
 - MIT `LICENSE` (it covers every version, including 0.1.0 and 0.2.0), `THIRD-PARTY-LICENSES.html`
@@ -59,6 +61,7 @@ All notable changes to Skrinka are listed here. The format follows
 - `config.toml` with defaults, "Open config file", "Reload config", "Run on startup" and
   "Open screenshots folder" in the tray menu.
 
-[Unreleased]: https://github.com/cropsp/skrinka/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cropsp/skrinka/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/cropsp/skrinka/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cropsp/skrinka/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/cropsp/skrinka/releases/tag/v0.1.0
